@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "so.den",
+  "name": "Den",
+  "version": "1.0.0",
+  "author": "Saif",
+  "license": "MIT",
+  "description": "Windows-style overflow flyout: tuck away tray apps and bar plugins behind one chevron",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Den.qml"
+  },
+  "barWidget": {
+    "displayName": "Den",
+    "description": "Overflow flyout for hidden tray apps and collapsed plugins; press-and-hold drag in and out",
+    "category": "Status",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "widgets": []
+    }
+  }
+}
