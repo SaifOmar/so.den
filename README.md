@@ -52,15 +52,20 @@ your theme).
 
 ## Install
 
-```bash
-git clone https://github.com/SaifOmar/so.den.git ~/.config/omarchy/plugins/so.den
-omarchy-shell shell rescanPlugins
+```sh
+omarchy plugin add https://github.com/SaifOmar/so.den.git --enable
 ```
 
-Then place it on your bar:
+That's it. Place it on your bar:
 
-```bash
+```sh
 omarchy bar move so.den --section right
+```
+
+## Uninstall
+
+```sh
+omarchy plugin remove so.den
 ```
 
 ### Settings
