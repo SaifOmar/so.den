@@ -130,6 +130,18 @@ BarWidget {
     return slash !== -1 ? id.substring(slash + 1) : (id || "Unknown")
   }
 
+  // Tray apps are untrusted local inputs (StatusNotifierItem D-Bus). Reject any
+  // network-scheme string (http/https/ftp/…) so a malicious notifier can't make
+  // the shared shell fetch or load an arbitrary remote/SSRF resource. Any other
+  // value (QIcon, theme name, local path, empty) is passed through unchanged.
+  function safeIconSource(v) {
+    if (typeof v !== "string") return v
+    var s = v || ""
+    if (!s) return ""
+    if (/^(https?|ftps?):/i.test(s)) return ""
+    return s
+  }
+
   // Live tray items, excluding passives and omarchy-owned pseudo-items.
   readonly property var liveTrayItems: {
     var values = SystemTray.items.values
@@ -943,6 +955,7 @@ BarWidget {
           anchors.right: parent.right
           anchors.rightMargin: Style.space(8)
           elide: Text.ElideRight
+          textFormat: Text.PlainText
           text: root.submenuDepth > 0 ? root.currentTitle : root.activeTrayName
           color: root.foreground
           font.family: root.fontFamily
@@ -1060,6 +1073,7 @@ BarWidget {
           verticalAlignment: Text.AlignVCenter
           horizontalAlignment: Text.AlignHCenter
           elide: Text.ElideRight
+          textFormat: Text.PlainText
           text: {
             if (root.dragActive && root.dragKind === "plugin") {
               var t = root.barDropTarget
@@ -1263,7 +1277,7 @@ BarWidget {
       fillMode: Image.PreserveAspectFit
       sourceSize.width: Math.round(Math.min(width, height) * Screen.devicePixelRatio)
       sourceSize.height: Math.round(Math.min(width, height) * Screen.devicePixelRatio)
-      source: String(trayIconRoot.icon || "")
+      source: root.safeIconSource(trayIconRoot.icon)
       visible: !trayIconRoot.symbolic
       layer.enabled: trayIconRoot.symbolic
     }
@@ -1438,7 +1452,7 @@ BarWidget {
       fillMode: Image.PreserveAspectFit
       sourceSize.width: width * Screen.devicePixelRatio
       sourceSize.height: height * Screen.devicePixelRatio
-      source: menuRow.modelData.icon
+      source: root.safeIconSource(menuRow.modelData.icon)
     }
 
     Text {
@@ -1448,6 +1462,7 @@ BarWidget {
       anchors.leftMargin: menuEntryIcon.visible ? Style.space(46) : Style.space(28)
       anchors.right: submenuGlyph.left
       anchors.rightMargin: Style.space(8)
+      textFormat: Text.PlainText
       text: menuRow.rowText
       color: root.foreground
       font.family: root.fontFamily
