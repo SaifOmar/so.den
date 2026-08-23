@@ -130,15 +130,30 @@ BarWidget {
     return slash !== -1 ? id.substring(slash + 1) : (id || "Unknown")
   }
 
-  // Tray apps are untrusted local inputs (StatusNotifierItem D-Bus). Reject any
-  // network-scheme string (http/https/ftp/…) so a malicious notifier can't make
-  // the shared shell fetch or load an arbitrary remote/SSRF resource. Any other
-  // value (QIcon, theme name, local path, empty) is passed through unchanged.
+  // Tray apps are untrusted local inputs (StatusNotifierItem D-Bus), and every
+  // string they supply reaches Image.source verbatim. Use an allowlist, not a
+  // blocklist: only non-string values (QIcon objects) and bare icon/theme names
+  // pass through. Any URI scheme (file:, data:, qrc:, http(s):, ftp(s):, …) and
+  // anything path-like is rejected, so a malicious notifier can never make the
+  // shared shell fetch, load, or decode an arbitrary remote or local resource.
   function safeIconSource(v) {
     if (typeof v !== "string") return v
     var s = v || ""
     if (!s) return ""
-    if (/^(https?|ftps?):/i.test(s)) return ""
+    if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return ""
+    if (/^(\/|\.\.?\/|~)/.test(s)) return ""
+    return s
+  }
+
+  // Plugin face icons are semi-trusted: they resolve from manifests of plugins
+  // the user installed themselves and must keep loading real files from disk.
+  // Block everything that isn't needed for that (embedded qrc/data payloads,
+  // network schemes) while absolute paths and file: URLs keep working.
+  function safeFaceSource(v) {
+    if (typeof v !== "string") return v
+    var s = v || ""
+    if (!s) return ""
+    if (/^(https?|ftps?|data|qrc|blob):/i.test(s)) return ""
     return s
   }
 
@@ -1095,6 +1110,7 @@ BarWidget {
           visible: !root.trayMenuMode
           anchors.verticalCenter: parent.verticalCenter
           anchors.right: parent.right
+          textFormat: Text.PlainText
           text: {
             var total = root.trayOverflowItems.length + root.hiddenIds.length
             return total > 0 ? String(total) : ""
@@ -1133,12 +1149,13 @@ BarWidget {
       fillMode: Image.PreserveAspectFit
       sourceSize.width: Math.round(width * Screen.devicePixelRatio)
       sourceSize.height: Math.round(height * Screen.devicePixelRatio)
-      source: face.faceInfo && face.faceInfo.kind === "image" ? String(face.faceInfo.value || "") : ""
+      source: face.faceInfo && face.faceInfo.kind === "image" ? root.safeFaceSource(String(face.faceInfo.value || "")) : ""
     }
 
     Text {
       visible: face.faceKind === "plugin" && face.faceInfo && face.faceInfo.kind === "glyph"
       anchors.centerIn: parent
+      textFormat: Text.PlainText
       text: face.faceInfo && face.faceInfo.kind === "glyph" ? String(face.faceInfo.value || "") : ""
       color: root.foreground
       font.family: root.fontFamily
@@ -1155,6 +1172,7 @@ BarWidget {
 
       Text {
         anchors.centerIn: parent
+        textFormat: Text.PlainText
         text: face.faceInfo && face.faceInfo.kind === "letter" ? String(face.faceInfo.value || "?") : "?"
         color: root.foreground
         font.family: root.fontFamily

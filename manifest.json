@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "so.den",
   "name": "Den",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "Saif",
   "license": "MIT",
   "description": "Windows-style overflow flyout: tuck away tray apps and bar plugins behind one chevron",
