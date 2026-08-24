@@ -44,8 +44,11 @@ fallback chain:
 2. optional manifest convention — `icon` or `barWidget.icon` accepts a Nerd
    Font glyph or an image path (relative paths resolve against the plugin dir)
 3. live extraction of the widget's actual bar-button glyph from its mounted
-   instance
-4. letter avatar
+   instance — a pure nerd-font glyph first, then one stripped out of mixed
+   button text ("󰁁 Notifications"), then a plain Unicode symbol (⌨)
+4. a builtin guess from the plugin id/name (keyboard, window, hotspot,
+   notifications, stats and friends)
+5. letter avatar
 
 Tray apps always render their real icon (symbolic icons are tinted to match
 your theme).
@@ -78,6 +81,18 @@ All settings live on Den's entry in `~/.config/omarchy/shell.json`:
   the stock tray so its own hover-expander stays empty and Den becomes the
   single overflow. Set to `false` to leave the stock tray alone.
 - `icons` — per-plugin icon overrides, see above.
+- `popupMaxWidth` — default `184`. Width of the dropdown card, in Omarchy
+  "space" units (the same UI scale used everywhere, so it tracks DPI).
+- `popupMaxHeight` — default `340`. Height of the dropdown card in the same
+  units. A taller card lets the inner tile grid show more rows before scrolling.
+
+The card is resized directly: grab its bottom edge (height), right edge
+(width) or bottom-right corner (both) and drag. Sizes snap to whole tile
+columns and rows, so you always land on a clean grid with no half-cut tiles,
+and the choice is saved once when you release. Double-click an edge to reset
+that axis to its default. The two keys above hold the persisted values if you
+prefer to edit `shell.json` by hand; sizes are clamped to a sane range and to
+the screen.
 
 ## Files
 

@@ -94,6 +94,25 @@ BarWidget {
       ? manifest.barWidget.defaults : ({})
   }
 
+  // The widget's real inline settings (layout entry, else its plugins[] entry),
+  // mirroring how Bar.qml injects settings; falls back to manifest defaults.
+  function settingsFor(id) {
+    void root.manageRevision
+    var shell = root.bar && root.bar.shell
+    var s = shell ? DenModel.entrySettings(shell.shellConfig, id) : null
+    return s !== null ? s : root.defaultsFor(id)
+  }
+
+  // Re-inject settings into every mounted widget — called when the card
+  // closes, so edits made through a tucked plugin's own panel apply on the
+  // next open.
+  function refreshMountedSettings() {
+    for (var id in root.mountedMap) {
+      var w = root.mountedMap[id]
+      if (w && "settings" in w) w.settings = root.settingsFor(id)
+    }
+  }
+
   function displayName(id) {
     var entry = root.registryWidgets[id]
     if (entry && entry.metadata && entry.metadata.displayName) return String(entry.metadata.displayName)
@@ -237,6 +256,163 @@ BarWidget {
   readonly property real tileSize: Style.space(32)
   readonly property real gridSpacing: Style.space(6)
   readonly property real ejectStripHeight: Style.space(34)
+
+  // --- popup size (configurable) --------------------------------------------
+  //
+  // Width/height of the dropdown card, in Omarchy "space" units (the same
+  // scale the rest of the UI uses, so they track DPI). Resized by dragging the
+  // card's bottom / right / bottom-right edges: sizes snap to whole tile
+  // columns and rows so a half-cut tile never shows, and the result is saved
+  // once on release. Double-clicking an edge resets that axis to the default.
+  property real popupWidth: root.setting("popupMaxWidth", 184)
+  property real popupHeight: root.setting("popupMaxHeight", 340)
+  readonly property real popupWidthPx: Style.space(root.popupWidth)
+  readonly property real popupHeightPx: Style.space(root.popupHeight)
+
+  // Clamp range (space units).
+  readonly property real popupMinSize: 120
+  readonly property real popupMaxSize: 600
+
+  // Window chrome around the tile body, in px: PopupCard's padding on both
+  // sides plus its border. Deliberately generous — over-estimating only
+  // leaves a couple of spare pixels inside the window, under-estimating would
+  // let the grid clip against the card's rounded corners.
+  readonly property real popupInsetPx: menuPopup.padding * 2
+    + Style.space(2) * 2 + 2
+
+  // Pitch of one grid column/row: a tile plus one gap.
+  readonly property real gridPitchPx: root.tileSize + root.gridSpacing
+
+  function clampPopupUnits(units) {
+    return Math.max(root.popupMinSize, Math.min(root.popupMaxSize, Math.round(units)))
+  }
+
+  // Window size that fits exactly `cols` tile columns / `rows` tile rows.
+  function snapWidthToCols(cols) {
+    var innerPx = Math.max(1, Math.round(cols)) * root.gridPitchPx - root.gridSpacing
+    return root.clampPopupUnits((innerPx + root.popupInsetPx)
+      / Math.max(Style.spacing.scale, 0.01))
+  }
+
+  function snapHeightToRows(rows) {
+    var bodyPx = Math.max(1, Math.round(rows)) * root.gridPitchPx - root.gridSpacing
+    return root.clampPopupUnits((bodyPx + footerRow.height + Style.space(8)
+      + root.popupInsetPx) / Math.max(Style.spacing.scale, 0.01))
+  }
+
+  // Inverse mappings (fractional) used as drag starting points.
+  function colsForUnits(units) {
+    var innerPx = units * Style.spacing.scale - root.popupInsetPx
+    return (innerPx + root.gridSpacing) / root.gridPitchPx
+  }
+
+  function rowsForUnits(units) {
+    var bodyPx = units * Style.spacing.scale - root.popupInsetPx
+      - footerRow.height - Style.space(8)
+    return (bodyPx + root.gridSpacing) / root.gridPitchPx
+  }
+
+  // Body (scroll area) cap for the CURRENT height: whatever the window offers
+  // beyond chrome, footer and the column's spacings.
+  readonly property real popupBodyMaxPx: Math.max(
+    Style.space(72),
+    root.popupHeightPx - root.popupInsetPx - footerRow.height - Style.space(8))
+
+  // --- edge resize -----------------------------------------------------------
+  //
+  // Deltas are integrated per-event in each handle's own local coordinates —
+  // no cross-window item mapping (mapping into the bar window's space yields
+  // garbage; see the hyprctl cursorpos workaround used for bar drops).
+  // Snap quantization means size only changes at column/row thresholds, so
+  // the handle shifting under the cursor at a snap can't feed back into the
+  // measurement loop.
+  property string resizeAxis: "" // "", "w", "h", "wh"
+  property real resizeStartCols: 0
+  property real resizeStartRows: 0
+  property real resizeFracCols: 0
+  property real resizeFracRows: 0
+
+  // Per-axis resize geometry for the current bar side. dragSign: +1 means
+  // pulling the handle outward (down/right) grows the card. originShift: the
+  // fraction of applied growth the window origin travels along the axis
+  // (signed) — 0 when the origin is pinned, -1/2 when anchoring re-centers
+  // the card under the chevron, -1 when the card grows away from a pinned
+  // near edge. The next pointer delta is compensated by (1 + shift) × growth.
+  readonly property string barPos: root.bar ? String(root.bar.position || "top") : "top"
+  readonly property real hDragSign: barPos === "bottom" ? -1 : 1
+  readonly property real hShift: barPos === "bottom" ? -1
+    : (barPos === "left" || barPos === "right") ? -0.5 : 0
+  readonly property real wDragSign: barPos === "right" ? -1 : 1
+  readonly property real wShift: barPos === "right" ? -1 : (barPos === "left") ? 0 : -0.5
+
+  function resizeBegin(axis) {
+    if (root.resizeAxis) return // already resizing (corner over an edge strip)
+    root.resizeAxis = axis
+    root.resizeFracCols = 0
+    root.resizeFracRows = 0
+    root.resizeStartCols = root.colsForUnits(root.popupWidth)
+    root.resizeStartRows = root.rowsForUnits(root.popupHeight)
+  }
+
+  // dxPx/dyPx are compensated screen-axis deltas; they are converted to
+  // growth-direction motion internally. Returns the applied signed growth in
+  // px per axis ({w, h}) so the caller can compensate subsequent deltas.
+  function resizeMove(dxPx, dyPx) {
+    var scale = Math.max(Style.spacing.scale, 0.01)
+    var axis = root.resizeAxis
+    var gw = 0, gh = 0
+    if (!axis) return { w: 0, h: 0 }
+    if (axis.indexOf("w") !== -1 && dxPx) {
+      var prevW = root.popupWidthPx
+      root.resizeFracCols += (root.wDragSign * dxPx) / scale / root.gridPitchPx
+      root.popupWidth = root.snapWidthToCols(root.resizeStartCols + root.resizeFracCols)
+      gw = root.popupWidthPx - prevW
+    }
+    if (axis.indexOf("h") !== -1 && dyPx) {
+      var prevH = root.popupHeightPx
+      root.resizeFracRows += (root.hDragSign * dyPx) / scale / root.gridPitchPx
+      root.popupHeight = root.snapHeightToRows(root.resizeStartRows + root.resizeFracRows)
+      gh = root.popupHeightPx - prevH
+    }
+    return { w: gw, h: gh }
+  }
+
+  function resizeEnd(commit) {
+    var axis = root.resizeAxis
+    root.resizeAxis = ""
+    root.resizeFracCols = 0
+    root.resizeFracRows = 0
+    if (!commit || !axis) return
+    if (axis.indexOf("w") !== -1)
+      root.persistSetting("popupMaxWidth", Math.round(root.popupWidth))
+    if (axis.indexOf("h") !== -1)
+      root.persistSetting("popupMaxHeight", Math.round(root.popupHeight))
+  }
+
+  function resizeReset(axis) {
+    axis = String(axis || "")
+    if (axis.indexOf("w") !== -1) {
+      root.popupWidth = 184
+      root.persistSetting("popupMaxWidth", 184)
+    }
+    if (axis.indexOf("h") !== -1) {
+      root.popupHeight = 340
+      root.persistSetting("popupMaxHeight", 340)
+    }
+  }
+
+  function persistSetting(name, value) {
+    root.mutateConfig(function(c) {
+      DenModel.setEntrySetting(c, root.moduleName, name, value)
+    })
+    var next = {}
+    var prev = root.settings
+    if (prev && typeof prev === "object") {
+      for (var k in prev) next[k] = prev[k]
+    }
+    next[name] = value
+    root.settings = next
+  }
 
   function tileDragStart(kind, id, handle, mx, my) {
     root.dragKind = kind
@@ -471,7 +647,7 @@ BarWidget {
 
   Timer {
     id: cursorPollTimer
-    interval: 40
+    interval: 70
     repeat: true
     running: root.dragActive && root.dragKind === "plugin"
     onTriggered: {
@@ -630,35 +806,129 @@ BarWidget {
   //   1. "icons" overrides map on our layout entry,
   //   2. optional manifest icon (glyph string or image path),
   //   3. the widget's real bar glyph, extracted from the mounted instance,
-  //   4. a letter avatar.
+  //   4. a builtin guess from the plugin's id/name,
+  //   5. a letter avatar.
   // Tray tiles always use the item's real icon.
 
+  function isPrivateUse(cp) {
+    return (cp >= 0xE000 && cp <= 0xF8FF)
+      || (cp >= 0xF0000 && cp <= 0xFFFFD)
+      || (cp >= 0x100000 && cp <= 0x10FFFD)
+  }
+
+  function isSymbolChar(cp) {
+    // Arrows and up: U+2000–U+218F is punctuation ("‹", "…") — not icon material.
+    return (cp >= 0x2190 && cp <= 0x2BFF)
+      || (cp >= 0x1F000 && cp <= 0x1FAFF)
+      || (cp >= 0xFE00 && cp <= 0xFE0F) // variation selectors ("⌨️")
+  }
+
+  // Kept for override/manifest checks: a pure nerd-font glyph string.
   function isGlyphString(s) {
-    if (!s || s.length === 0 || s.length > 4) return false
-    for (var i = 0; i < s.length; i++) {
-      var cp = s.codePointAt(i)
-      if (cp > 0xFFFF) i++
-      var privateUse = (cp >= 0xE000 && cp <= 0xF8FF)
-        || (cp >= 0xF0000 && cp <= 0xFFFFD)
-        || (cp >= 0x100000 && cp <= 0x10FFFD)
-      if (!privateUse) return false
-    }
+    if (!s || s.length === 0 || s.length > 8) return false
+    var pts = root.codePoints(s)
+    for (var i = 0; i < pts.length; i++) if (!root.isPrivateUse(pts[i])) return false
     return true
   }
 
-  // Breadth-first so the widget's main button glyph wins over nested ones.
+  function codePoints(s) {
+    var pts = []
+    for (var i = 0; i < s.length; i++) {
+      var cp = s.codePointAt(i)
+      if (cp > 0xFFFF) i++
+      pts.push(cp)
+    }
+    return pts
+  }
+
+  // Rank one candidate string: 0 = pure nerd-font glyph, 1 = glyph run that
+  // can be stripped out of mixed text ("󰁁 Notifications" → "󰁁"),
+  // 2 = plain Unicode symbol the font renders ("⌨"), -1 = unusable.
+  function glyphTier(s) {
+    var t = String(s || "")
+    if (!t || t.length > 12) return { tier: -1, value: "" }
+    var pts = root.codePoints(t)
+    var allPua = true, anyPua = false, allUsable = true
+    for (var i = 0; i < pts.length; i++) {
+      if (root.isPrivateUse(pts[i])) anyPua = true
+      else allPua = false
+      if (!(root.isPrivateUse(pts[i]) || root.isSymbolChar(pts[i]))) allUsable = false
+    }
+    if (allPua) return { tier: 0, value: t }
+    if (anyPua) {
+      var stripped = ""
+      for (var j = 0; j < pts.length; j++)
+        if (root.isPrivateUse(pts[j])) stripped += String.fromCodePoint(pts[j])
+      if (stripped) return { tier: 1, value: stripped }
+    }
+    if (allUsable && pts.length <= 2) return { tier: 2, value: t }
+    return { tier: -1, value: "" }
+  }
+
+  // Breadth-first so the widget's main button glyph wins over nested ones;
+  // among candidates, the lowest tier anywhere in the tree wins (first found
+  // breaks ties).
   function findGlyphBFS(inst) {
-    if (!inst) return ""
+    if (!inst) return null
     var queue = [inst]
-    while (queue.length > 0) {
+    var best = null
+    while (queue.length > 0 && (!best || best.tier > 0)) {
       var item = queue.shift()
       if (!item || typeof item !== "object") continue
-      var t = item["text"]
-      if (typeof t === "string" && root.isGlyphString(t)) return t
-      var g = item["iconText"]
-      if (typeof g === "string" && root.isGlyphString(g)) return g
+      var props = ["text", "iconText", "glyph", "icon"]
+      for (var p = 0; p < props.length; p++) {
+        var v = item[props[p]]
+        if (typeof v !== "string") continue
+        var c = root.glyphTier(v)
+        if (c.tier !== -1 && (!best || c.tier < best.tier)) best = c
+      }
       var kids = item.children
       if (kids) for (var i = 0; i < kids.length; i++) queue.push(kids[i])
+    }
+    return best ? best.value : ""
+  }
+
+  // Last-resort guesses for widgets with no discoverable icon at all,
+  // matched against the plugin id and display name. The "icons" override map
+  // always wins over these.
+  readonly property var builtinGlyphs: {
+    var m = {}
+    m["keyboard"] = "\uf11c"
+    m["window"] = "\uf2d0"
+    m["scratch"] = "\uf120"
+    m["terminal"] = "\uf120"
+    m["notification"] = "\uf0a2"
+    m["hotspot"] = "\uf1eb"
+    m["wifi"] = "\uf1eb"
+    m["network"] = "\uf0ac"
+    m["wallpaper"] = "\uf03e"
+    m["image"] = "\uf03e"
+    m["theme"] = "\uf042"
+    m["stats"] = "\uf2db"
+    m["cpu"] = "\uf2db"
+    m["system"] = "\uf2db"
+    m["update"] = "\uf021"
+    m["clipboard"] = "\uf0ea"
+    m["media"] = "\uf001"
+    m["music"] = "\uf001"
+    m["translate"] = "\uf1ab"
+    m["quran"] = "\uf636"
+    // Brand-style icons drawn as vector shapes by their plugins — no glyph
+    // exists in the widget tree to extract, so guess from the name instead.
+    m["tailscale"] = "\uf00a" // FA "th": 3×3 grid, matches the dot-grid mark
+    m["cloudflare"] = "\uf0c2"
+    m["warp"] = "\uf0c2"
+    m["cloud"] = "\uf0c2"
+    m["vpn"] = "\uf3ed"
+    m["dock"] = "\uf120"
+    m["emoji"] = "\uf118"
+    return m
+  }
+
+  function builtinGlyphFor(id, name) {
+    var hay = (String(id || "") + " " + String(name || "")).toLowerCase()
+    for (var key in root.builtinGlyphs) {
+      if (hay.indexOf(key) !== -1) return root.builtinGlyphs[key]
     }
     return ""
   }
@@ -694,6 +964,8 @@ BarWidget {
     }
     var extracted = root.findGlyphBFS(root.mountedItem(id))
     if (extracted) return { kind: "glyph", value: extracted }
+    var guessed = root.builtinGlyphFor(id, root.displayName(id))
+    if (guessed) return { kind: "glyph", value: guessed }
     return { kind: "letter", value: root.avatarLetter(root.displayName(id)) }
   }
 
@@ -708,17 +980,24 @@ BarWidget {
 
   function open() {
     root.tileDragCancel()
+    root.resizeEnd(false)
     root.hoveredTileLabel = ""
     if (root.trayMenuMode) root.closeTrayMenu()
     root.iconRevision++
+    // Land on the tile grid even if shell.json holds an off-grid size; the
+    // persisted values are only rewritten by an actual resize gesture.
+    root.popupWidth = root.snapWidthToCols(root.colsForUnits(root.popupWidth))
+    root.popupHeight = root.snapHeightToRows(root.rowsForUnits(root.popupHeight))
     root.menuOpen = true
   }
 
   function close() {
     root.tileDragCancel()
+    root.resizeEnd(false)
     root.hoveredTileLabel = ""
     if (root.trayMenuMode) root.closeTrayMenu()
     root.menuOpen = false
+    root.refreshMountedSettings()
     root.manageRevision++
   }
 
@@ -860,7 +1139,7 @@ BarWidget {
         if (!w) return
         if ("bar" in w) w.bar = root.bar
         if ("moduleName" in w) w.moduleName = slot.widgetId
-        if ("settings" in w) w.settings = root.defaultsFor(slot.widgetId)
+        if ("settings" in w) w.settings = root.settingsFor(slot.widgetId)
         if ("anchorItem" in w) w.anchorItem = root.button
         root.registerMounted(slot.widgetId, w)
       }
@@ -868,6 +1147,64 @@ BarWidget {
 
     Component.onDestruction: {
       if (root) root.unregisterMounted(slot.widgetId)
+    }
+  }
+
+  // Edge/corner resize affordance: an invisible strip along one side of the
+  // card that lights up with a soft accent pill on hover and drags the given
+  // axis live. Instances anchor themselves with a negative margin so the hit
+  // zone reaches past the card's inner padding to the window edge.
+  component ResizeEdge: MouseArea {
+    id: edge
+    property string axis: "h"
+    property bool horizontalPill: true
+    property real lastX: 0
+    property real lastY: 0
+    // Growth we applied that the next raw delta will have measured against a
+    // shifted handle origin; added back before accumulating (see barPos
+    // comment on root). Without this, each snap cancels ~a pitch of real
+    // motion — the drag → jump → dead-zone glitch.
+    property real pendingCompX: 0
+    property real pendingCompY: 0
+
+    z: 40
+    enabled: root.menuOpen && !root.dragActive && !root.extDragActive
+    acceptedButtons: Qt.LeftButton
+    hoverEnabled: true
+
+    onPressed: function(mouse) {
+      edge.lastX = mouse.x
+      edge.lastY = mouse.y
+      edge.pendingCompX = 0
+      edge.pendingCompY = 0
+      root.resizeBegin(edge.axis)
+    }
+    onPositionChanged: function(mouse) {
+      if (!pressed || !root.resizeAxis) return
+      var dx = mouse.x - edge.lastX + edge.pendingCompX
+      var dy = mouse.y - edge.lastY + edge.pendingCompY
+      edge.pendingCompX = 0
+      edge.pendingCompY = 0
+      edge.lastX = mouse.x
+      edge.lastY = mouse.y
+      var g = root.resizeMove(dx, dy)
+      edge.pendingCompX = g.w * (1 + root.wShift)
+      edge.pendingCompY = g.h * (1 + root.hShift)
+    }
+    onReleased: root.resizeEnd(true)
+    onCanceled: root.resizeEnd(false)
+    onDoubleClicked: root.resizeReset(edge.axis)
+
+    Rectangle {
+      anchors.centerIn: parent
+      width: edge.horizontalPill ? Style.space(30) : Style.space(3)
+      height: edge.horizontalPill ? Style.space(3) : Style.space(30)
+      radius: Math.min(width, height) / 2
+      color: Util.alpha(Color.accent, edge.pressed ? 0.70 : 0.32)
+      opacity: edge.containsMouse || edge.pressed ? 1 : 0
+      Behavior on opacity {
+        NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+      }
     }
   }
 
@@ -879,16 +1216,17 @@ BarWidget {
     owner: root
     bar: root.bar
     open: root.menuOpen
+    // Tighter than the shell default (14): the tile grid should hug the card.
+    padding: Style.space(3)
     // Click-away dismissal routes through owner.close(), but a lost release
     // (e.g. the shell restarting mid-gesture) could otherwise leave the eject
     // strip stuck on screen.
-    onVisibleChanged: if (!visible) root.tileDragCancel()
-    contentWidth: menuPopup.fittedContentWidth(Style.space(184))
-    contentHeight: menuPopup.fittedContentHeight(
-      headerRow.implicitHeight + Style.space(6)
-      + bodyFlick.height
-      + footerRow.height + Style.space(8),
-      Style.space(340))
+    onVisibleChanged: if (!visible) { root.tileDragCancel(); root.resizeEnd(false) }
+    contentWidth: menuPopup.fittedContentWidth(root.popupWidthPx)
+    // Desired height is simply the live column layout; popupHeightPx acts as
+    // the user-chosen cap.
+    contentHeight: menuPopup.fittedContentHeight(menuColumn.implicitHeight,
+      root.popupHeightPx)
 
     Rectangle {
       id: ejectStrip
@@ -913,6 +1251,42 @@ BarWidget {
       }
     }
 
+    // --- edge resize handles -------------------------------------------------
+    // Bottom edge → height, right edge → width, corner → both. Thin enough to
+    // stay out of the tiles' way; negative margins reach the window edge.
+    ResizeEdge {
+      axis: "h"
+      cursorShape: Qt.SizeVerCursor
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      anchors.bottomMargin: -menuPopup.padding
+      height: Style.space(7)
+    }
+
+    ResizeEdge {
+      axis: "w"
+      horizontalPill: false
+      cursorShape: Qt.SizeHorCursor
+      anchors.top: parent.top
+      anchors.bottom: parent.bottom
+      anchors.right: parent.right
+      anchors.rightMargin: -menuPopup.padding
+      width: Style.space(7)
+    }
+
+    ResizeEdge {
+      axis: "wh"
+      cursorShape: Qt.SizeFDiagCursor
+      z: 41
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      anchors.rightMargin: -menuPopup.padding
+      anchors.bottomMargin: -menuPopup.padding
+      width: Style.space(14)
+      height: Style.space(14)
+    }
+
     Column {
       id: menuColumn
       anchors.fill: parent
@@ -921,6 +1295,11 @@ BarWidget {
       Item {
         id: headerRow
         width: menuColumn.width
+        // Wayfinding row for the app-menu view only; collapsed in the idle
+        // grid view so tiles start right under the card's top edge (Column
+        // drops invisible children — and their spacing — from the layout).
+        visible: root.trayMenuMode
+        height: root.trayMenuMode ? 20 : 0
         implicitHeight: 20
 
         Button {
@@ -969,9 +1348,9 @@ BarWidget {
         width: menuColumn.width
         height: {
           if (root.trayMenuMode)
-            return Math.min(menuCol.implicitHeight, Style.space(300))
+            return Math.min(menuCol.implicitHeight, root.popupBodyMaxPx)
           return root.trayOverflowItems.length + root.hiddenIds.length > 0
-            ? Math.min(gridCol.implicitHeight, Style.space(264))
+            ? Math.min(gridCol.implicitHeight, root.popupBodyMaxPx)
             : Style.space(72)
         }
         contentWidth: width
@@ -1103,9 +1482,10 @@ BarWidget {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
         }
+        }
       }
     }
-  }
+
 
   property string hoveredTileLabel: ""
 
@@ -1133,11 +1513,14 @@ BarWidget {
       fillMode: Image.PreserveAspectFit
       sourceSize.width: Math.round(width * Screen.devicePixelRatio)
       sourceSize.height: Math.round(height * Screen.devicePixelRatio)
-      source: face.faceInfo && face.faceInfo.kind === "image" ? String(face.faceInfo.value || "") : ""
+      // Guarded like tray icons: a manifest icon must never be a remote URL.
+      source: face.faceInfo && face.faceInfo.kind === "image"
+        ? String(root.safeIconSource(face.faceInfo.value) || "") : ""
     }
 
     Text {
       visible: face.faceKind === "plugin" && face.faceInfo && face.faceInfo.kind === "glyph"
+      textFormat: Text.PlainText
       anchors.centerIn: parent
       text: face.faceInfo && face.faceInfo.kind === "glyph" ? String(face.faceInfo.value || "") : ""
       color: root.foreground
@@ -1548,6 +1931,16 @@ BarWidget {
     var inLayout = root.layoutHasId(key)
     var inPlugins = root.pluginsHasId(key)
     if (!inLayout && inPlugins) return
+    // Carry the layout entry's inline settings into the plugins[] entry so
+    // tucking a configured widget away never silently drops its settings.
+    // Den-specific keys (widgets/icons) are not settings and stay behind.
+    var carried = {}
+    var src = DenModel.findLayoutEntry(shell.shellConfig, key)
+    if (src && typeof src === "object") {
+      for (var sk in src) {
+        if (sk !== "id" && sk !== "widgets" && sk !== "icons") carried[sk] = src[sk]
+      }
+    }
     var sections = DenModel.sections()
     root.mutateConfig(function(c) {
       if (!c) return
@@ -1565,9 +1958,14 @@ BarWidget {
       if (!Array.isArray(c.plugins)) c.plugins = []
       var exists = false
       for (var k = 0; k < c.plugins.length; k++) {
-        if (c.plugins[k] && DenModel.entryId(c.plugins[k]) === key) { exists = true; break }
+        var e = c.plugins[k]
+        if (e && DenModel.entryId(e) === key) {
+          exists = true
+          for (var ck in carried) if (!(ck in e)) e[ck] = carried[ck]
+          break
+        }
       }
-      if (!exists) c.plugins.push({ id: key })
+      if (!exists) { carried.id = key; c.plugins.push(carried) }
     })
   }
 
@@ -1580,6 +1978,16 @@ BarWidget {
     var inLayout = root.layoutHasId(key)
     var inPlugins = root.pluginsHasId(key)
     if (inLayout && !inPlugins) return
+    // Carry the plugins[] entry's inline settings back onto the layout entry —
+    // the reverse of the tuck-away merge, so ejecting a widget never drops
+    // its configured settings. Den's own list keys stay behind.
+    var carried = {}
+    var src = DenModel.entrySettings(shell.shellConfig, key)
+    if (src) {
+      for (var sk in src) {
+        if (sk !== "widgets" && sk !== "icons") carried[sk] = src[sk]
+      }
+    }
     var targetRegion = String(region || "")
     if (targetRegion !== "left" && targetRegion !== "center" && targetRegion !== "right")
       targetRegion = "right"
@@ -1612,7 +2020,16 @@ BarWidget {
           }
         }
         insertAt = Math.max(0, Math.min(insertAt, arr.length))
-        arr.splice(insertAt, 0, { id: key })
+        var entry = { id: key }
+        for (var ck in carried) entry[ck] = carried[ck]
+        arr.splice(insertAt, 0, entry)
+      } else if (inLayout && Object.keys(carried).length > 0) {
+        // Already on the bar but settings lived in plugins[]: merge them into
+        // the existing layout entry so nothing is lost.
+        var srcEntry = DenModel.findLayoutEntry(c, key)
+        if (srcEntry && typeof srcEntry === "object") {
+          for (var mk in carried) if (!(mk in srcEntry)) srcEntry[mk] = carried[mk]
+        }
       }
     })
   }
