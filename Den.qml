@@ -373,15 +373,27 @@ BarWidget {
   // anchorItem, so local mouse coords are fundamentally unstable during resize
   // (the window shifts on every size change). Absolute screen-space deltas
   // from a captured baseline eliminate this feedback loop entirely.
+  //
+  // The polling lives at root level (single shared Process + Timer) for
+  // minimal overhead — per-edge Processes would each pay fork+exec cost.
   property string resizeAxis: "" // "", "w", "h", "wh"
   property real resizeStartW: 0  // space units at baseline capture
   property real resizeStartH: 0
+  property real resizeWSign: 0
+  property real resizeHSign: 0
+  property real resizeScreenX0: 0
+  property real resizeScreenY0: 0
+  property bool resizeBaselineReady: false
 
   readonly property string barPos: root.bar ? String(root.bar.position || "top") : "top"
 
-  function resizeBegin(axis) {
+  function resizeBegin(axis, wSign, hSign) {
     if (root.resizeAxis) return
     root.resizeAxis = axis
+    root.resizeWSign = wSign
+    root.resizeHSign = hSign
+    root.resizeBaselineReady = false
+    if (!resizePollProc.running) resizePollProc.running = true
   }
 
   function resizeMove(dxPx, dyPx) {
@@ -410,6 +422,44 @@ BarWidget {
       var snappedH = root.snapHeightToRows(root.rowsForUnits(root.popupHeight))
       root.popupHeight = snappedH
       root.persistSetting("popupMaxHeight", Math.round(snappedH))
+    }
+  }
+
+  Timer {
+    id: resizePollTimer
+    interval: 8
+    repeat: true
+    running: !!root.resizeAxis
+    onTriggered: {
+      if (resizePollProc.running) return
+      resizePollProc.running = true
+    }
+  }
+
+  Process {
+    id: resizePollProc
+    command: ["hyprctl", "cursorpos"]
+    stdout: StdioCollector { id: resizePollStdout; waitForEnd: true }
+    stderr: StdioCollector {}
+    onExited: {
+      if (!root.resizeAxis) return
+      var match = /(-?\d+)\D+(-?\d+)/.exec(String(resizePollStdout.text || ""))
+      if (!match) return
+      var sx = Number(match[1])
+      var sy = Number(match[2])
+
+      if (!root.resizeBaselineReady) {
+        root.resizeScreenX0 = sx
+        root.resizeScreenY0 = sy
+        root.resizeStartW = root.popupWidth
+        root.resizeStartH = root.popupHeight
+        root.resizeBaselineReady = true
+        return
+      }
+
+      var dxPx = (sx - root.resizeScreenX0) * root.resizeWSign
+      var dyPx = (sy - root.resizeScreenY0) * root.resizeHSign
+      root.resizeMove(dxPx, dyPx)
     }
   }
 
@@ -1204,9 +1254,8 @@ BarWidget {
   // Edge/corner resize affordance: an invisible strip along one side of the
   // card that lights up with a soft accent pill on hover and drags the given
   // axis live. Each instance declares wSign/hSign (+1 or -1) indicating which
-  // direction dragging grows the popup. Screen-space cursor tracking via
-  // hyprctl cursorpos — absolute deltas from a captured baseline eliminate
-  // the local-coordinate feedback loop caused by PopupCard re-centering.
+  // direction dragging grows the popup. Screen-space cursor tracking lives at
+  // root level — this component just tells root which axis+direction to use.
   component ResizeEdge: MouseArea {
     id: edge
     property string axis: "h"
@@ -1214,61 +1263,14 @@ BarWidget {
     property real hSign: 0
     property bool horizontalPill: true
 
-    // Screen-space baseline captured on first poll after press.
-    property real startScreenX: 0
-    property real startScreenY: 0
-    property bool baselineReady: false
-
     z: 40
     enabled: root.menuOpen && !root.dragActive && !root.extDragActive
     acceptedButtons: Qt.LeftButton
     hoverEnabled: true
     preventStealing: true
 
-    Process {
-      id: edgeProc
-      command: ["hyprctl", "cursorpos"]
-      stdout: StdioCollector { id: edgeStdout; waitForEnd: true }
-      stderr: StdioCollector {}
-      onExited: {
-        if (!edge.pressed || !root.resizeAxis) return
-        var match = /(-?\d+)\D+(-?\d+)/.exec(String(edgeStdout.text || ""))
-        if (!match) return
-        var sx = Number(match[1])
-        var sy = Number(match[2])
-
-        if (!edge.baselineReady) {
-          // First poll: establish screen-space baseline + capture start size.
-          edge.startScreenX = sx
-          edge.startScreenY = sy
-          root.resizeStartW = root.popupWidth
-          root.resizeStartH = root.popupHeight
-          edge.baselineReady = true
-          return
-        }
-
-        // Absolute delta from baseline, in screen pixels.
-        var dxPx = (sx - edge.startScreenX) * edge.wSign
-        var dyPx = (sy - edge.startScreenY) * edge.hSign
-        root.resizeMove(dxPx, dyPx)
-      }
-    }
-
-    Timer {
-      id: edgePollTimer
-      interval: 16
-      repeat: true
-      running: edge.pressed && !!root.resizeAxis
-      onTriggered: {
-        if (edgeProc.running) return
-        edgeProc.running = true
-      }
-    }
-
     onPressed: function(mouse) {
-      edge.baselineReady = false
-      root.resizeBegin(edge.axis)
-      edgeProc.running = true
+      root.resizeBegin(edge.axis, edge.wSign, edge.hSign)
     }
     onReleased: root.resizeEnd(true)
     onCanceled: root.resizeEnd(false)
