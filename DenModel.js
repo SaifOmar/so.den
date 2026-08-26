@@ -36,13 +36,13 @@ function findLayoutEntry(config, id) {
   return null
 }
 
-// Write a single key into a widget's inline settings object, creating the
-// object if the layout entry has none. Used by the GUI settings panel.
+// Write a single key into a widget's layout entry. The bar host reads
+// settings flat (all entry keys except id), so values must live at the
+// top level — not inside a nested settings sub-object.
 function setEntrySetting(config, id, name, value) {
   var entry = findLayoutEntry(config, id)
   if (!entry) return
-  if (typeof entry.settings !== "object" || entry.settings === null) entry.settings = {}
-  entry.settings[name] = value
+  entry[name] = value
 }
 
 function layoutHas(config, id) {
