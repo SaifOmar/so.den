@@ -269,6 +269,8 @@ BarWidget {
   property bool ejectArmed: false
   property real dragGhostX: 0
   property real dragGhostY: 0
+  property real grabOffX: 0
+  property real grabOffY: 0
   readonly property real dragThreshold: Style.space(6)
   readonly property real tileSize: Style.space(32)
   readonly property real gridSpacing: Style.space(6)
@@ -367,11 +369,11 @@ BarWidget {
 
   // --- edge resize -----------------------------------------------------------
   //
-  // Local mouse coordinates with PopupCard window-shift compensation.
-  // PopupCard re-centers on anchorItem whenever content size changes, which
-  // shifts the window and distorts local mouse coordinates. We predict the
-  // shift from the actual size change and cancel it on the next frame.
-  // No snap during drag — continuous resize; snap only on release.
+  // Local mouse coordinates — no window-shift compensation. PopupCard
+  // re-centers on anchorItem when size changes, which shifts local coords,
+  // but predictive compensation fails with async Wayland compositor timing.
+  // The cursor slides slightly along the edge instead of staying perfectly
+  // pinned, but resize is smooth and never oscillates.
   property string resizeAxis: "" // "", "w", "h", "wh"
   property real resizeStartW: 0  // space units at drag start
   property real resizeStartH: 0  // space units at drag start
@@ -385,24 +387,16 @@ BarWidget {
     root.resizeStartH = root.popupHeight
   }
 
-  // dxPx/dyPx are local mouse deltas already in growth direction.
-  // Returns { w, h } actual size change in px for window-shift compensation.
   function resizeMove(dxPx, dyPx) {
     var scale = Math.max(Style.spacing.scale, 0.01)
     var axis = root.resizeAxis
-    var gw = 0, gh = 0
-    if (!axis) return { w: 0, h: 0 }
+    if (!axis) return
     if (axis.indexOf("w") !== -1) {
-      var prevW = root.popupWidthPx
       root.popupWidth = root.clampPopupUnits(root.resizeStartW + dxPx / scale)
-      gw = root.popupWidthPx - prevW
     }
     if (axis.indexOf("h") !== -1) {
-      var prevH = root.popupHeightPx
       root.popupHeight = root.clampPopupUnits(root.resizeStartH + dyPx / scale)
-      gh = root.popupHeightPx - prevH
     }
-    return { w: gw, h: gh }
   }
 
   // On release: snap to nearest grid position, persist, let Behavior ease.
@@ -448,6 +442,8 @@ BarWidget {
   }
 
   function tileDragStart(kind, id, handle, mx, my) {
+    root.grabOffX = mx
+    root.grabOffY = my
     root.dragKind = kind
     root.dragId = id
     root.dragActive = true
@@ -459,12 +455,12 @@ BarWidget {
   function trackDrag(handle, mx, my) {
     var popPoint
     try {
-      popPoint = bodyFlick.mapFromItem(handle, mx, my)
+      popPoint = menuPopup.mapFromItem(handle, mx, my)
     } catch (e) {
       return
     }
-    root.dragGhostX = popPoint.x - root.tileSize / 2
-    root.dragGhostY = popPoint.y - root.tileSize / 2
+    root.dragGhostX = popPoint.x - root.grabOffX
+    root.dragGhostY = popPoint.y - root.grabOffY
   }
 
   function tileDragMove(handle, mx, my) {
@@ -476,13 +472,28 @@ BarWidget {
     } catch (e) {
       return
     }
-    root.ejectArmed = popPoint.y <= root.ejectStripHeight || popPoint.y < 0
+    root.updateEject(popPoint)
     if (root.ejectArmed) {
       root.reorderTargetKey = ""
       root.reorderAfter = false
       return
     }
-    root.computeReorderTarget(handle, mx, my)
+    var rp
+    try {
+      rp = bodyContent.mapFromItem(menuPopup, popPoint.x, popPoint.y)
+    } catch (e) {
+      return
+    }
+    root.computeReorderTargetFromPoint(rp)
+  }
+
+  function updateEject(p) {
+    var isVertical = root.bar && (root.bar.position === "left" || root.bar.position === "right")
+    if (isVertical)
+      root.ejectArmed = p.x <= root.ejectStripHeight || p.x < 0
+    else
+      root.ejectArmed = (p.x >= -8 && p.x <= menuPopup.width + 8)
+        && (p.y <= root.ejectStripHeight + 4 || p.y < 0)
   }
 
   // Live bar drop target while dragging a plugin tile: { region, anchorName,
@@ -493,36 +504,33 @@ BarWidget {
   // the dragged tile would take.
   property string reorderTargetKey: ""
   property bool reorderAfter: false
+  property real reorderBestDist: Infinity
 
-  function computeReorderTarget(handle, mx, my) {
-    var p
-    try {
-      p = bodyContent.mapFromItem(handle, mx, my)
-    } catch (e) {
-      return
-    }
+  function computeReorderTargetFromPoint(rp) {
     var marginX = Style.space(10)
     var marginY = Style.space(10)
-    if (p.x < -marginX || p.x > bodyContent.width + marginX
-        || p.y < -marginY || p.y > bodyContent.height + marginY) {
+    if (rp.x < -marginX || rp.x > bodyContent.width + marginX
+        || rp.y < -marginY || rp.y > bodyContent.height + marginY) {
       root.reorderTargetKey = ""
+      root.reorderBestDist = Infinity
       return
     }
 
     var kindIsTray = root.dragKind === "tray"
-    var kids = bodyContent.children
+    var cell = root.tileSize + root.gridSpacing
+    var cols = Math.max(1, Math.floor((bodyContent.width + root.gridSpacing) / cell))
     var best = null
     var bestDist = Infinity
+    var kids = bodyContent.children
     for (var i = 0; i < kids.length; i++) {
       var t = kids[i]
-      // Only DrawerTile delegates carry this marker.
       if (t.tileIsTray === undefined || !t.visible) continue
       if (t.tileIsTray !== kindIsTray) continue
       if (String(t.key) === String(root.dragId)) continue
       var cx = t.x + t.width / 2
       var cy = t.y + t.height / 2
-      var dx = p.x - cx
-      var dy = p.y - cy
+      var dx = rp.x - cx
+      var dy = rp.y - cy
       var d = dx * dx + dy * dy
       if (d < bestDist) {
         bestDist = d
@@ -530,12 +538,23 @@ BarWidget {
         best = { key: String(t.key), after: sameRow ? dx > 0 : dy > 0 }
       }
     }
-    if (!best) {
+
+    var deadzone = cell * 0.55
+    if (!best || bestDist > deadzone * deadzone) {
       root.reorderTargetKey = ""
+      root.reorderBestDist = Infinity
       return
     }
+
+    // Hysteresis: keep previous target if new dist isn't significantly closer
+    if (root.reorderTargetKey && best.key !== root.reorderTargetKey
+        && bestDist > root.reorderBestDist + Style.space(6) * Style.space(6)) {
+      return
+    }
+
     root.reorderTargetKey = best.key
     root.reorderAfter = best.after
+    root.reorderBestDist = bestDist
   }
 
   function commitReorder(id, anchorKey, after) {
@@ -553,7 +572,7 @@ BarWidget {
     var idx = list.indexOf(String(anchorId))
     if (idx === -1) return
     var insertAt = Math.max(0, Math.min(after ? idx + 1 : idx, list.length))
-    if (insertAt === fi) return
+    if (list[insertAt] === String(id)) return
     list.splice(insertAt, 0, String(id))
     root.persistWidgets(list)
   }
@@ -577,7 +596,7 @@ BarWidget {
     var idx = list.indexOf(String(anchorId))
     if (idx === -1) return
     var insertAt = Math.max(0, Math.min(after ? idx + 1 : idx, list.length))
-    if (insertAt === fi) return
+    if (list[insertAt] === String(id)) return
     list.splice(insertAt, 0, String(id))
     root.persistTrayState(root.trayPinnedIds, list)
   }
@@ -621,6 +640,7 @@ BarWidget {
     root.barDropTarget = null
     root.reorderTargetKey = ""
     root.reorderAfter = false
+    root.reorderBestDist = Infinity
   }
 
   function ejectPlugin(id, region, anchorName, after) {
@@ -1192,13 +1212,11 @@ BarWidget {
   component ResizeEdge: MouseArea {
     id: edge
     property string axis: "h"
-    property real wSign: 0   // +1 = dragging right grows width, -1 = left
-    property real hSign: 0   // +1 = dragging down grows height, -1 = up
+    property real wSign: 0
+    property real hSign: 0
     property bool horizontalPill: true
     property real lastX: 0
     property real lastY: 0
-    property real pendingCompX: 0
-    property real pendingCompY: 0
 
     z: 40
     enabled: root.menuOpen && !root.dragActive && !root.extDragActive
@@ -1209,32 +1227,15 @@ BarWidget {
     onPressed: function(mouse) {
       edge.lastX = mouse.x
       edge.lastY = mouse.y
-      edge.pendingCompX = 0
-      edge.pendingCompY = 0
       root.resizeBegin(edge.axis)
     }
     onPositionChanged: function(mouse) {
       if (!pressed || !root.resizeAxis) return
-      var rawDx = mouse.x - edge.lastX
-      var rawDy = mouse.y - edge.lastY
-      var dx = (rawDx + edge.pendingCompX) * edge.wSign
-      var dy = (rawDy + edge.pendingCompY) * edge.hSign
-      edge.pendingCompX = 0
-      edge.pendingCompY = 0
+      var dx = (mouse.x - edge.lastX) * edge.wSign
+      var dy = (mouse.y - edge.lastY) * edge.hSign
       edge.lastX = mouse.x
       edge.lastY = mouse.y
-      var g = root.resizeMove(dx, dy)
-      var bp = root.barPos
-      var wComp = 0, hComp = 0
-      if (bp === "top" || bp === "bottom") {
-        wComp = -g.w / 2
-        if (bp === "bottom") hComp = -g.h
-      } else {
-        if (bp === "right") wComp = -g.w
-        hComp = -g.h / 2
-      }
-      edge.pendingCompX = wComp
-      edge.pendingCompY = hComp
+      root.resizeMove(dx, dy)
     }
     onReleased: root.resizeEnd(true)
     onCanceled: root.resizeEnd(false)
@@ -1266,7 +1267,13 @@ BarWidget {
     // Click-away dismissal routes through owner.close(), but a lost release
     // (e.g. the shell restarting mid-gesture) could otherwise leave the eject
     // strip stuck on screen.
-    onVisibleChanged: if (!visible) { root.tileDragCancel(); root.resizeEnd(false) }
+    onVisibleChanged: {
+      if (!visible) {
+        if (root.dragActive) root.tileDragEnd()
+        else root.tileDragCancel()
+        root.resizeEnd(false)
+      }
+    }
     contentWidth: menuPopup.fittedContentWidth(root.popupWidthPx)
     // Desired height accounts for header visibility: when collapsed the grid
     // tiles sit right under the card's top edge.
