@@ -310,11 +310,11 @@ BarWidget {
   // the card, grid cap and body reveal animate together.
   Behavior on popupWidth {
     enabled: !root.resizeAxis
-    NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+    NumberAnimation { duration: 80; easing.type: Easing.OutCubic }
   }
   Behavior on popupHeight {
     enabled: !root.resizeAxis
-    NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+    NumberAnimation { duration: 80; easing.type: Easing.OutCubic }
   }
 
   // Clamp range (space units).
@@ -431,10 +431,18 @@ BarWidget {
     root.resizeFracCols = 0
     root.resizeFracRows = 0
     if (!commit || !axis) return
-    if (axis.indexOf("w") !== -1)
-      root.persistSetting("popupMaxWidth", Math.round(root.popupWidth))
-    if (axis.indexOf("h") !== -1)
-      root.persistSetting("popupMaxHeight", Math.round(root.popupHeight))
+    // Snap to final grid position — the Behavior on popupWidth/Height will
+    // ease the card to the committed size now that resizeAxis is cleared.
+    if (axis.indexOf("w") !== -1) {
+      var snappedW = root.snapWidthToCols(root.colsForUnits(root.popupWidth))
+      root.persistSetting("popupMaxWidth", Math.round(snappedW))
+      root.popupWidth = snappedW
+    }
+    if (axis.indexOf("h") !== -1) {
+      var snappedH = root.snapHeightToRows(root.rowsForUnits(root.popupHeight))
+      root.persistSetting("popupMaxHeight", Math.round(snappedH))
+      root.popupHeight = snappedH
+    }
   }
 
   function resizeReset(axis) {
@@ -1219,6 +1227,7 @@ BarWidget {
     enabled: root.menuOpen && !root.dragActive && !root.extDragActive
     acceptedButtons: Qt.LeftButton
     hoverEnabled: true
+    preventStealing: true
 
     onPressed: function(mouse) {
       edge.lastX = mouse.x
