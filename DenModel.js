@@ -36,6 +36,15 @@ function findLayoutEntry(config, id) {
   return null
 }
 
+// Write a single key into a widget's layout entry. The bar host reads
+// settings flat (all entry keys except id), so values must live at the
+// top level — not inside a nested settings sub-object.
+function setEntrySetting(config, id, name, value) {
+  var entry = findLayoutEntry(config, id)
+  if (!entry) return
+  entry[name] = value
+}
+
 function layoutHas(config, id) {
   return findLayoutEntry(config, id) !== null
 }
@@ -55,6 +64,24 @@ function trayEntrySettings(config) {
   var pinned = entry && entry.pinned instanceof Array ? entry.pinned : []
   var hidden = entry && entry.hidden instanceof Array ? entry.hidden : []
   return { pinned: pinned, hidden: hidden }
+}
+
+// Inline settings for a widget id: its bar-layout entry if present, else its
+// top-level plugins[] entry. Returns a shallow copy of every key except id,
+// mirroring BarModel.entrySettings; null when neither entry exists.
+function entrySettings(config, id) {
+  var key = String(id || "")
+  var entry = findLayoutEntry(config, key)
+  if (!entry && config && Array.isArray(config.plugins)) {
+    for (var i = 0; i < config.plugins.length; i++) {
+      var p = config.plugins[i]
+      if (p && entryId(p) === key) { entry = p; break }
+    }
+  }
+  if (!entry || typeof entry !== "object") return null
+  var copy = {}
+  for (var k in entry) if (k !== "id") copy[k] = entry[k]
+  return copy
 }
 
 function stringList(value) {
