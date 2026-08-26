@@ -368,80 +368,60 @@ BarWidget {
 
   // --- edge resize -----------------------------------------------------------
   //
-  // Deltas are integrated per-event in each handle's own local coordinates —
-  // no cross-window item mapping (mapping into the bar window's space yields
-  // garbage; see the hyprctl cursorpos workaround used for bar drops).
-  // Snap quantization means size only changes at column/row thresholds, so
-  // the handle shifting under the cursor at a snap can't feed back into the
-  // measurement loop.
+  // Screen-space cursor tracking via hyprctl cursorpos eliminates the
+  // local-coordinate-shift feedback problem. Each edge instance declares its
+  // own growth direction (wSign/hSign) based on which side it sits on and
+  // where the bar is. During drag the size changes continuously (no snap);
+  // on release it snaps to the nearest grid position.
   property string resizeAxis: "" // "", "w", "h", "wh"
-  property real resizeStartCols: 0
-  property real resizeStartRows: 0
-  property real resizeFracCols: 0
-  property real resizeFracRows: 0
+  property real resizeWSign: 1   // per-edge: +1 or -1
+  property real resizeHSign: 1   // per-edge: +1 or -1
+  property real resizeStartW: 0  // px at drag start
+  property real resizeStartH: 0  // px at drag start
+  property real resizeScreenX0: 0
+  property real resizeScreenY0: 0
 
-  // Per-axis resize geometry for the current bar side. dragSign: +1 means
-  // pulling the handle outward (down/right) grows the card. originShift: the
-  // fraction of applied growth the window origin travels along the axis
-  // (signed) — 0 when the origin is pinned, -1/2 when anchoring re-centers
-  // the card under the chevron, -1 when the card grows away from a pinned
-  // near edge. The next pointer delta is compensated by (1 + shift) × growth.
   readonly property string barPos: root.bar ? String(root.bar.position || "top") : "top"
-  readonly property real hDragSign: barPos === "bottom" ? -1 : 1
-  readonly property real hShift: barPos === "bottom" ? -1
-    : (barPos === "left" || barPos === "right") ? -0.5 : 0
-  readonly property real wDragSign: barPos === "right" ? -1 : 1
-  readonly property real wShift: barPos === "right" ? -1 : (barPos === "left") ? 0 : -0.5
 
-  function resizeBegin(axis) {
-    if (root.resizeAxis) return // already resizing (corner over an edge strip)
+  function resizeBegin(axis, wSign, hSign) {
+    if (root.resizeAxis) return
     root.resizeAxis = axis
-    root.resizeFracCols = 0
-    root.resizeFracRows = 0
-    root.resizeStartCols = root.colsForUnits(root.popupWidth)
-    root.resizeStartRows = root.rowsForUnits(root.popupHeight)
+    root.resizeWSign = wSign || 0
+    root.resizeHSign = hSign || 0
+    root.resizeStartW = root.popupWidthPx
+    root.resizeStartH = root.popupHeightPx
   }
 
-  // dxPx/dyPx are compensated screen-axis deltas; they are converted to
-  // growth-direction motion internally. Returns the applied signed growth in
-  // px per axis ({w, h}) so the caller can compensate subsequent deltas.
+  // Apply a screen-space delta (already multiplied by per-edge sign).
+  // No snap — the size changes continuously with the cursor.
   function resizeMove(dxPx, dyPx) {
     var scale = Math.max(Style.spacing.scale, 0.01)
     var axis = root.resizeAxis
-    var gw = 0, gh = 0
-    if (!axis) return { w: 0, h: 0 }
-    if (axis.indexOf("w") !== -1 && dxPx) {
-      var prevW = root.popupWidthPx
-      root.resizeFracCols += (root.wDragSign * dxPx) / scale / root.gridPitchPx
-      root.popupWidth = root.snapWidthToCols(root.resizeStartCols + root.resizeFracCols)
-      gw = root.popupWidthPx - prevW
+    if (!axis) return
+    if (axis.indexOf("w") !== -1) {
+      root.popupWidth = Math.max(root.popupMinSize, Math.min(root.popupMaxSize,
+        Math.round(root.resizeStartW + dxPx / scale)))
     }
-    if (axis.indexOf("h") !== -1 && dyPx) {
-      var prevH = root.popupHeightPx
-      root.resizeFracRows += (root.hDragSign * dyPx) / scale / root.gridPitchPx
-      root.popupHeight = root.snapHeightToRows(root.resizeStartRows + root.resizeFracRows)
-      gh = root.popupHeightPx - prevH
+    if (axis.indexOf("h") !== -1) {
+      root.popupHeight = Math.max(root.popupMinSize, Math.min(root.popupMaxSize,
+        Math.round(root.resizeStartH + dyPx / scale)))
     }
-    return { w: gw, h: gh }
   }
 
+  // On release: snap to nearest grid position, persist, let Behavior ease.
   function resizeEnd(commit) {
     var axis = root.resizeAxis
     root.resizeAxis = ""
-    root.resizeFracCols = 0
-    root.resizeFracRows = 0
     if (!commit || !axis) return
-    // Snap to final grid position — the Behavior on popupWidth/Height will
-    // ease the card to the committed size now that resizeAxis is cleared.
     if (axis.indexOf("w") !== -1) {
       var snappedW = root.snapWidthToCols(root.colsForUnits(root.popupWidth))
-      root.persistSetting("popupMaxWidth", Math.round(snappedW))
       root.popupWidth = snappedW
+      root.persistSetting("popupMaxWidth", Math.round(snappedW))
     }
     if (axis.indexOf("h") !== -1) {
       var snappedH = root.snapHeightToRows(root.rowsForUnits(root.popupHeight))
-      root.persistSetting("popupMaxHeight", Math.round(snappedH))
       root.popupHeight = snappedH
+      root.persistSetting("popupMaxHeight", Math.round(snappedH))
     }
   }
 
@@ -1208,20 +1188,15 @@ BarWidget {
 
   // Edge/corner resize affordance: an invisible strip along one side of the
   // card that lights up with a soft accent pill on hover and drags the given
-  // axis live. Instances anchor themselves with a negative margin so the hit
-  // zone reaches past the card's inner padding to the window edge.
+  // axis live. Each instance declares wSign/hSign (+1 or -1) indicating which
+  // direction dragging grows the popup. Screen-space cursor tracking via
+  // hyprctl cursorpos avoids the local-coordinate-shift feedback problem.
   component ResizeEdge: MouseArea {
     id: edge
     property string axis: "h"
+    property real wSign: 0   // +1 = dragging right grows width, -1 = left
+    property real hSign: 0   // +1 = dragging down grows height, -1 = up
     property bool horizontalPill: true
-    property real lastX: 0
-    property real lastY: 0
-    // Growth we applied that the next raw delta will have measured against a
-    // shifted handle origin; added back before accumulating (see barPos
-    // comment on root). Without this, each snap cancels ~a pitch of real
-    // motion — the drag → jump → dead-zone glitch.
-    property real pendingCompX: 0
-    property real pendingCompY: 0
 
     z: 40
     enabled: root.menuOpen && !root.dragActive && !root.extDragActive
@@ -1229,24 +1204,37 @@ BarWidget {
     hoverEnabled: true
     preventStealing: true
 
+    Process {
+      id: edgeCursorProcess
+      command: ["hyprctl", "cursorpos"]
+      stdout: StdioCollector { id: edgeCursorStdout; waitForEnd: true }
+      stderr: StdioCollector {}
+      property real lastScreenX: 0
+      property real lastScreenY: 0
+      onExited: {
+        if (!edge.pressed || !root.resizeAxis) return
+        var match = /(-?\d+)\D+(-?\d+)/.exec(String(edgeCursorStdout.text || ""))
+        if (!match) return
+        var sx = Number(match[1])
+        var sy = Number(match[2])
+        var dx = (sx - edgeCursorProcess.lastScreenX) * edge.wSign
+        var dy = (sy - edgeCursorProcess.lastScreenY) * edge.hSign
+        edgeCursorProcess.lastScreenX = sx
+        edgeCursorProcess.lastScreenY = sy
+        root.resizeMove(dx, dy)
+      }
+    }
+
     onPressed: function(mouse) {
-      edge.lastX = mouse.x
-      edge.lastY = mouse.y
-      edge.pendingCompX = 0
-      edge.pendingCompY = 0
-      root.resizeBegin(edge.axis)
+      root.resizeBegin(edge.axis, edge.wSign, edge.hSign)
+      edgeCursorProcess.lastScreenX = 0
+      edgeCursorProcess.lastScreenY = 0
+      edgeCursorProcess.running = true
     }
     onPositionChanged: function(mouse) {
       if (!pressed || !root.resizeAxis) return
-      var dx = mouse.x - edge.lastX + edge.pendingCompX
-      var dy = mouse.y - edge.lastY + edge.pendingCompY
-      edge.pendingCompX = 0
-      edge.pendingCompY = 0
-      edge.lastX = mouse.x
-      edge.lastY = mouse.y
-      var g = root.resizeMove(dx, dy)
-      edge.pendingCompX = g.w * (1 + root.wShift)
-      edge.pendingCompY = g.h * (1 + root.hShift)
+      if (edgeCursorProcess.running) return
+      edgeCursorProcess.running = true
     }
     onReleased: root.resizeEnd(true)
     onCanceled: root.resizeEnd(false)
@@ -1313,13 +1301,14 @@ BarWidget {
     }
 
     // --- edge resize handles -------------------------------------------------
-    // All four edges and four corners. Thin enough to stay out of the tiles'
-    // way; negative margins reach the window edge. Corners (z:41) take priority
-    // over edges (z:40) in overlap areas.
+    // All four edges and four corners. Each edge declares its own growth
+    // direction: dragging outward from the popup center = grow.
+    // Corners (z:41) take priority over edges (z:40) in overlap areas.
 
-    // Top edge
+    // Top edge — drag up grows taller
     ResizeEdge {
       axis: "h"
+      hSign: -1
       horizontalPill: true
       cursorShape: Qt.SizeVerCursor
       anchors.left: parent.left
@@ -1329,9 +1318,10 @@ BarWidget {
       height: Style.space(7)
     }
 
-    // Bottom edge
+    // Bottom edge — drag down grows taller
     ResizeEdge {
       axis: "h"
+      hSign: 1
       horizontalPill: true
       cursorShape: Qt.SizeVerCursor
       anchors.left: parent.left
@@ -1341,9 +1331,10 @@ BarWidget {
       height: Style.space(7)
     }
 
-    // Left edge
+    // Left edge — drag left grows wider
     ResizeEdge {
       axis: "w"
+      wSign: -1
       horizontalPill: false
       cursorShape: Qt.SizeHorCursor
       anchors.top: parent.top
@@ -1353,9 +1344,10 @@ BarWidget {
       width: Style.space(7)
     }
 
-    // Right edge
+    // Right edge — drag right grows wider
     ResizeEdge {
       axis: "w"
+      wSign: 1
       horizontalPill: false
       cursorShape: Qt.SizeHorCursor
       anchors.top: parent.top
@@ -1365,9 +1357,11 @@ BarWidget {
       width: Style.space(7)
     }
 
-    // Top-left corner
+    // Top-left corner — drag up-left grows both
     ResizeEdge {
       axis: "wh"
+      wSign: -1
+      hSign: -1
       cursorShape: Qt.SizeFDiagCursor
       z: 41
       anchors.left: parent.left
@@ -1378,9 +1372,11 @@ BarWidget {
       height: Style.space(14)
     }
 
-    // Top-right corner
+    // Top-right corner — drag up-right grows both
     ResizeEdge {
       axis: "wh"
+      wSign: 1
+      hSign: -1
       cursorShape: Qt.SizeBDiagCursor
       z: 41
       anchors.right: parent.right
@@ -1391,9 +1387,11 @@ BarWidget {
       height: Style.space(14)
     }
 
-    // Bottom-left corner
+    // Bottom-left corner — drag down-left grows both
     ResizeEdge {
       axis: "wh"
+      wSign: -1
+      hSign: 1
       cursorShape: Qt.SizeBDiagCursor
       z: 41
       anchors.left: parent.left
@@ -1404,9 +1402,11 @@ BarWidget {
       height: Style.space(14)
     }
 
-    // Bottom-right corner
+    // Bottom-right corner — drag down-right grows both
     ResizeEdge {
       axis: "wh"
+      wSign: 1
+      hSign: 1
       cursorShape: Qt.SizeFDiagCursor
       z: 41
       anchors.right: parent.right
