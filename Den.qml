@@ -1313,10 +1313,26 @@ BarWidget {
     }
 
     // --- edge resize handles -------------------------------------------------
-    // Bottom edge → height, right edge → width, corner → both. Thin enough to
-    // stay out of the tiles' way; negative margins reach the window edge.
+    // All four edges and four corners. Thin enough to stay out of the tiles'
+    // way; negative margins reach the window edge. Corners (z:41) take priority
+    // over edges (z:40) in overlap areas.
+
+    // Top edge
     ResizeEdge {
       axis: "h"
+      horizontalPill: true
+      cursorShape: Qt.SizeVerCursor
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.topMargin: -menuPopup.padding
+      height: Style.space(7)
+    }
+
+    // Bottom edge
+    ResizeEdge {
+      axis: "h"
+      horizontalPill: true
       cursorShape: Qt.SizeVerCursor
       anchors.left: parent.left
       anchors.right: parent.right
@@ -1325,6 +1341,19 @@ BarWidget {
       height: Style.space(7)
     }
 
+    // Left edge
+    ResizeEdge {
+      axis: "w"
+      horizontalPill: false
+      cursorShape: Qt.SizeHorCursor
+      anchors.top: parent.top
+      anchors.bottom: parent.bottom
+      anchors.left: parent.left
+      anchors.leftMargin: -menuPopup.padding
+      width: Style.space(7)
+    }
+
+    // Right edge
     ResizeEdge {
       axis: "w"
       horizontalPill: false
@@ -1336,6 +1365,46 @@ BarWidget {
       width: Style.space(7)
     }
 
+    // Top-left corner
+    ResizeEdge {
+      axis: "wh"
+      cursorShape: Qt.SizeFDiagCursor
+      z: 41
+      anchors.left: parent.left
+      anchors.top: parent.top
+      anchors.leftMargin: -menuPopup.padding
+      anchors.topMargin: -menuPopup.padding
+      width: Style.space(14)
+      height: Style.space(14)
+    }
+
+    // Top-right corner
+    ResizeEdge {
+      axis: "wh"
+      cursorShape: Qt.SizeBDiagCursor
+      z: 41
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.rightMargin: -menuPopup.padding
+      anchors.topMargin: -menuPopup.padding
+      width: Style.space(14)
+      height: Style.space(14)
+    }
+
+    // Bottom-left corner
+    ResizeEdge {
+      axis: "wh"
+      cursorShape: Qt.SizeBDiagCursor
+      z: 41
+      anchors.left: parent.left
+      anchors.bottom: parent.bottom
+      anchors.leftMargin: -menuPopup.padding
+      anchors.bottomMargin: -menuPopup.padding
+      width: Style.space(14)
+      height: Style.space(14)
+    }
+
+    // Bottom-right corner
     ResizeEdge {
       axis: "wh"
       cursorShape: Qt.SizeFDiagCursor
