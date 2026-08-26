@@ -369,22 +369,19 @@ BarWidget {
 
   // --- edge resize -----------------------------------------------------------
   //
-  // Local mouse coordinates — no window-shift compensation. PopupCard
-  // re-centers on anchorItem when size changes, which shifts local coords,
-  // but predictive compensation fails with async Wayland compositor timing.
-  // The cursor slides slightly along the edge instead of staying perfectly
-  // pinned, but resize is smooth and never oscillates.
+  // Screen-space cursor tracking via hyprctl cursorpos. PopupCard centers on
+  // anchorItem, so local mouse coords are fundamentally unstable during resize
+  // (the window shifts on every size change). Absolute screen-space deltas
+  // from a captured baseline eliminate this feedback loop entirely.
   property string resizeAxis: "" // "", "w", "h", "wh"
-  property real resizeStartW: 0  // space units at drag start
-  property real resizeStartH: 0  // space units at drag start
+  property real resizeStartW: 0  // space units at baseline capture
+  property real resizeStartH: 0
 
   readonly property string barPos: root.bar ? String(root.bar.position || "top") : "top"
 
   function resizeBegin(axis) {
     if (root.resizeAxis) return
     root.resizeAxis = axis
-    root.resizeStartW = root.popupWidth
-    root.resizeStartH = root.popupHeight
   }
 
   function resizeMove(dxPx, dyPx) {
@@ -1207,16 +1204,20 @@ BarWidget {
   // Edge/corner resize affordance: an invisible strip along one side of the
   // card that lights up with a soft accent pill on hover and drags the given
   // axis live. Each instance declares wSign/hSign (+1 or -1) indicating which
-  // direction dragging grows the popup. Local mouse coordinates with
-  // window-shift compensation keep the drag smooth.
+  // direction dragging grows the popup. Screen-space cursor tracking via
+  // hyprctl cursorpos — absolute deltas from a captured baseline eliminate
+  // the local-coordinate feedback loop caused by PopupCard re-centering.
   component ResizeEdge: MouseArea {
     id: edge
     property string axis: "h"
     property real wSign: 0
     property real hSign: 0
     property bool horizontalPill: true
-    property real lastX: 0
-    property real lastY: 0
+
+    // Screen-space baseline captured on first poll after press.
+    property real startScreenX: 0
+    property real startScreenY: 0
+    property bool baselineReady: false
 
     z: 40
     enabled: root.menuOpen && !root.dragActive && !root.extDragActive
@@ -1224,18 +1225,50 @@ BarWidget {
     hoverEnabled: true
     preventStealing: true
 
-    onPressed: function(mouse) {
-      edge.lastX = mouse.x
-      edge.lastY = mouse.y
-      root.resizeBegin(edge.axis)
+    Process {
+      id: edgeProc
+      command: ["hyprctl", "cursorpos"]
+      stdout: StdioCollector { id: edgeStdout; waitForEnd: true }
+      stderr: StdioCollector {}
+      onExited: {
+        if (!edge.pressed || !root.resizeAxis) return
+        var match = /(-?\d+)\D+(-?\d+)/.exec(String(edgeStdout.text || ""))
+        if (!match) return
+        var sx = Number(match[1])
+        var sy = Number(match[2])
+
+        if (!edge.baselineReady) {
+          // First poll: establish screen-space baseline + capture start size.
+          edge.startScreenX = sx
+          edge.startScreenY = sy
+          root.resizeStartW = root.popupWidth
+          root.resizeStartH = root.popupHeight
+          edge.baselineReady = true
+          return
+        }
+
+        // Absolute delta from baseline, in screen pixels.
+        var dxPx = (sx - edge.startScreenX) * edge.wSign
+        var dyPx = (sy - edge.startScreenY) * edge.hSign
+        root.resizeMove(dxPx, dyPx)
+      }
     }
-    onPositionChanged: function(mouse) {
-      if (!pressed || !root.resizeAxis) return
-      var dx = (mouse.x - edge.lastX) * edge.wSign
-      var dy = (mouse.y - edge.lastY) * edge.hSign
-      edge.lastX = mouse.x
-      edge.lastY = mouse.y
-      root.resizeMove(dx, dy)
+
+    Timer {
+      id: edgePollTimer
+      interval: 16
+      repeat: true
+      running: edge.pressed && !!root.resizeAxis
+      onTriggered: {
+        if (edgeProc.running) return
+        edgeProc.running = true
+      }
+    }
+
+    onPressed: function(mouse) {
+      edge.baselineReady = false
+      root.resizeBegin(edge.axis)
+      edgeProc.running = true
     }
     onReleased: root.resizeEnd(true)
     onCanceled: root.resizeEnd(false)
