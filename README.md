@@ -86,14 +86,12 @@ All settings live on Den's entry in `~/.config/omarchy/shell.json`:
 - `popupMaxHeight` — default `340`. Height of the dropdown card in the same
   units. A taller card lets the inner tile grid show more rows before scrolling.
 
-The card is resized directly: grab its bottom edge (height), right edge
-(width) or bottom-right corner (both) and drag. Sizes snap to whole tile
-columns and rows, so you always land on a clean grid with no half-cut tiles,
-and the choice is saved once when you release. Double-click an edge to reset
-that axis to its default. Resizing is smoothly animated (180ms ease-out),
-matching the feel of a native window. The two keys above hold the persisted
-values if you prefer to edit `shell.json` by hand; sizes are clamped to a sane
-range and to the screen.
+The card is resized directly: grab any edge (top, bottom, left, right) or
+corner and drag. Sizes snap to whole tile columns and rows, so you always
+land on a clean grid with no half-cut tiles, and the choice is saved once
+when you release. Double-click any edge to reset that axis to its default.
+The two keys above hold the persisted values if you prefer to edit
+`shell.json` by hand; sizes are clamped to a sane range and to the screen.
 
 ## Files
 
