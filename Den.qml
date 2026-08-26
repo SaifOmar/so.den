@@ -402,11 +402,13 @@ BarWidget {
     if (!axis) return
     if (axis.indexOf("w") !== -1) {
       var newW = root.resizeStartW + dxPx / scale
-      root.popupWidth = Math.max(root.popupMinSize, Math.min(root.popupMaxSize, newW))
+      var cols = Math.max(1, Math.round(root.colsForUnits(newW)))
+      root.popupWidth = root.snapWidthToCols(cols)
     }
     if (axis.indexOf("h") !== -1) {
       var newH = root.resizeStartH + dyPx / scale
-      root.popupHeight = Math.max(root.popupMinSize, Math.min(root.popupMaxSize, newH))
+      var rows = Math.max(1, Math.round(root.rowsForUnits(newH)))
+      root.popupHeight = root.snapHeightToRows(rows)
     }
   }
 
