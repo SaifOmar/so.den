@@ -130,18 +130,14 @@ BarWidget {
     return slash !== -1 ? id.substring(slash + 1) : (id || "Unknown")
   }
 
-  // Tray apps are untrusted local inputs (StatusNotifierItem D-Bus), and every
-  // string they supply reaches Image.source verbatim. Use an allowlist, not a
-  // blocklist: only non-string values (QIcon objects) and bare icon/theme names
-  // pass through. Any URI scheme (file:, data:, qrc:, http(s):, ftp(s):, …) and
-  // anything path-like is rejected, so a malicious notifier can never make the
-  // shared shell fetch, load, or decode an arbitrary remote or local resource.
-  function safeIconSource(v) {
+  // Match stock omarchy.tray: Quickshell resolves tray icons into ready-to-use
+  // image:// URLs (with optional ?path= search dirs for Electron apps like
+  // Cursor). Filtering those out leaves invisible tiles — only block remote fetch.
+  function trayIconSource(v) {
     if (typeof v !== "string") return v
     var s = v || ""
     if (!s) return ""
-    if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return ""
-    if (/^(\/|\.\.?\/|~)/.test(s)) return ""
+    if (/^(https?|ftps?):/i.test(s)) return ""
     return s
   }
 
@@ -252,6 +248,24 @@ BarWidget {
   readonly property real tileSize: Style.space(32)
   readonly property real gridSpacing: Style.space(6)
   readonly property real ejectStripHeight: Style.space(34)
+  readonly property int denTileCount: trayOverflowItems.length + hiddenIds.length
+
+  // Card body height follows tile rows. Do not use gridCol.implicitHeight:
+  // Column still reports the hidden empty-state label, which left a one-row
+  // flyout looking like a tall empty box.
+  function gridBodyHeight() {
+    if (root.denTileCount <= 0) {
+      var hint = emptyHint && emptyHint.implicitHeight ? emptyHint.implicitHeight : Style.space(56)
+      return Math.max(Style.space(56), hint)
+    }
+    var flowH = bodyContent ? bodyContent.implicitHeight : 0
+    if (flowH >= root.tileSize)
+      return Math.min(flowH, Style.space(264))
+    var cell = root.tileSize + root.gridSpacing
+    var cols = Math.max(1, Math.floor((Style.space(184) + root.gridSpacing) / cell))
+    var rows = Math.ceil(root.denTileCount / cols)
+    return Math.min(rows * root.tileSize + Math.max(0, rows - 1) * root.gridSpacing, Style.space(264))
+  }
 
   function tileDragStart(kind, id, handle, mx, my) {
     root.dragKind = kind
@@ -900,9 +914,10 @@ BarWidget {
     onVisibleChanged: if (!visible) root.tileDragCancel()
     contentWidth: menuPopup.fittedContentWidth(Style.space(184))
     contentHeight: menuPopup.fittedContentHeight(
-      headerRow.implicitHeight + Style.space(6)
+      (headerRow.visible ? headerRow.height + menuColumn.spacing : 0)
       + bodyFlick.height
-      + footerRow.height + Style.space(8),
+      + menuColumn.spacing
+      + footerRow.height,
       Style.space(340))
 
     Rectangle {
@@ -936,7 +951,9 @@ BarWidget {
       Item {
         id: headerRow
         width: menuColumn.width
-        implicitHeight: 20
+        visible: root.trayMenuMode
+        height: visible ? Style.space(20) : 0
+        implicitHeight: height
 
         Button {
           id: backBtn
@@ -985,12 +1002,12 @@ BarWidget {
         height: {
           if (root.trayMenuMode)
             return Math.min(menuCol.implicitHeight, Style.space(300))
-          return root.trayOverflowItems.length + root.hiddenIds.length > 0
-            ? Math.min(gridCol.implicitHeight, Style.space(264))
-            : Style.space(72)
+          return root.gridBodyHeight()
         }
         contentWidth: width
-        contentHeight: Math.max(root.trayMenuMode ? menuCol.implicitHeight : gridCol.implicitHeight, height)
+        contentHeight: Math.max(root.trayMenuMode
+          ? menuCol.implicitHeight
+          : (root.denTileCount > 0 ? bodyContent.implicitHeight : emptyHint.implicitHeight), height)
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
@@ -1022,7 +1039,8 @@ BarWidget {
           }
 
           Text {
-            visible: root.trayOverflowItems.length === 0 && root.hiddenIds.length === 0
+            id: emptyHint
+            visible: root.denTileCount === 0
             width: gridCol.width
             text: "Nothing tucked away.\nHold a bar widget and drop it\non the chevron to hide it."
             horizontalAlignment: Text.AlignHCenter
@@ -1295,7 +1313,7 @@ BarWidget {
       fillMode: Image.PreserveAspectFit
       sourceSize.width: Math.round(Math.min(width, height) * Screen.devicePixelRatio)
       sourceSize.height: Math.round(Math.min(width, height) * Screen.devicePixelRatio)
-      source: root.safeIconSource(trayIconRoot.icon)
+      source: root.trayIconSource(trayIconRoot.icon)
       visible: !trayIconRoot.symbolic
       layer.enabled: trayIconRoot.symbolic
     }
@@ -1470,7 +1488,7 @@ BarWidget {
       fillMode: Image.PreserveAspectFit
       sourceSize.width: width * Screen.devicePixelRatio
       sourceSize.height: height * Screen.devicePixelRatio
-      source: root.safeIconSource(menuRow.modelData.icon)
+      source: root.trayIconSource(menuRow.modelData.icon)
     }
 
     Text {
