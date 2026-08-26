@@ -401,10 +401,12 @@ BarWidget {
     var axis = root.resizeAxis
     if (!axis) return
     if (axis.indexOf("w") !== -1) {
-      root.popupWidth = root.clampPopupUnits(root.resizeStartW + dxPx / scale)
+      var newW = root.resizeStartW + dxPx / scale
+      root.popupWidth = Math.max(root.popupMinSize, Math.min(root.popupMaxSize, newW))
     }
     if (axis.indexOf("h") !== -1) {
-      root.popupHeight = root.clampPopupUnits(root.resizeStartH + dyPx / scale)
+      var newH = root.resizeStartH + dyPx / scale
+      root.popupHeight = Math.max(root.popupMinSize, Math.min(root.popupMaxSize, newH))
     }
   }
 
@@ -1521,7 +1523,7 @@ BarWidget {
         height: {
           if (root.trayMenuMode)
             return Math.min(menuCol.implicitHeight, root.popupBodyMaxPx)
-          return root.gridBodyHeight()
+          return root.popupBodyMaxPx
         }
         contentWidth: width
         contentHeight: Math.max(root.trayMenuMode
