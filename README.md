@@ -90,9 +90,10 @@ The card is resized directly: grab its bottom edge (height), right edge
 (width) or bottom-right corner (both) and drag. Sizes snap to whole tile
 columns and rows, so you always land on a clean grid with no half-cut tiles,
 and the choice is saved once when you release. Double-click an edge to reset
-that axis to its default. The two keys above hold the persisted values if you
-prefer to edit `shell.json` by hand; sizes are clamped to a sane range and to
-the screen.
+that axis to its default. Resizing is smoothly animated (180ms ease-out),
+matching the feel of a native window. The two keys above hold the persisted
+values if you prefer to edit `shell.json` by hand; sizes are clamped to a sane
+range and to the screen.
 
 ## Files
 

@@ -149,15 +149,32 @@ BarWidget {
     return slash !== -1 ? id.substring(slash + 1) : (id || "Unknown")
   }
 
-  // Tray apps are untrusted local inputs (StatusNotifierItem D-Bus). Reject any
-  // network-scheme string (http/https/ftp/…) so a malicious notifier can't make
-  // the shared shell fetch or load an arbitrary remote/SSRF resource. Any other
-  // value (QIcon, theme name, local path, empty) is passed through unchanged.
+  // Tray apps are untrusted local inputs (StatusNotifierItem D-Bus), and every
+  // string they supply reaches Image.source verbatim. Use an allowlist, not a
+  // blocklist: only non-string values (QIcon objects), Quickshell-resolved
+  // image:// URLs, and bare icon/theme names pass through. Any other URI scheme
+  // (file:, data:, qrc:, http(s):, ftp(s):, …) and anything path-like is
+  // rejected, so a malicious notifier can never make the shared shell fetch,
+  // load, or decode an arbitrary remote or local resource.
   function safeIconSource(v) {
     if (typeof v !== "string") return v
     var s = v || ""
     if (!s) return ""
-    if (/^(https?|ftps?):/i.test(s)) return ""
+    if (/^image:\/\//i.test(s)) return s
+    if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return ""
+    if (/^(\/|\.\.?\/|~)/.test(s)) return ""
+    return s
+  }
+
+  // Plugin face icons are semi-trusted: they resolve from manifests of plugins
+  // the user installed themselves and must keep loading real files from disk.
+  // Block everything that isn't needed for that (embedded qrc/data payloads,
+  // network schemes) while absolute paths and file: URLs keep working.
+  function safeFaceSource(v) {
+    if (typeof v !== "string") return v
+    var s = v || ""
+    if (!s) return ""
+    if (/^(https?|ftps?|data|qrc|blob):/i.test(s)) return ""
     return s
   }
 
@@ -256,6 +273,24 @@ BarWidget {
   readonly property real tileSize: Style.space(32)
   readonly property real gridSpacing: Style.space(6)
   readonly property real ejectStripHeight: Style.space(34)
+  readonly property int denTileCount: trayOverflowItems.length + hiddenIds.length
+
+  // Card body height follows tile rows. Do not use gridCol.implicitHeight:
+  // Column still reports the hidden empty-state label, which left a one-row
+  // flyout looking like a tall empty box.
+  function gridBodyHeight() {
+    if (root.denTileCount <= 0) {
+      var hint = emptyHint && emptyHint.implicitHeight ? emptyHint.implicitHeight : Style.space(56)
+      return Math.max(Style.space(56), hint)
+    }
+    var flowH = bodyContent ? bodyContent.implicitHeight : 0
+    if (flowH >= root.tileSize)
+      return Math.min(flowH, root.popupBodyMaxPx)
+    var cell = root.tileSize + root.gridSpacing
+    var cols = Math.max(1, Math.floor((root.popupWidthPx + root.gridSpacing) / cell))
+    var rows = Math.ceil(root.denTileCount / cols)
+    return Math.min(rows * root.tileSize + Math.max(0, rows - 1) * root.gridSpacing, root.popupBodyMaxPx)
+  }
 
   // --- popup size (configurable) --------------------------------------------
   //
@@ -268,6 +303,19 @@ BarWidget {
   property real popupHeight: root.setting("popupMaxHeight", 340)
   readonly property real popupWidthPx: Style.space(root.popupWidth)
   readonly property real popupHeightPx: Style.space(root.popupHeight)
+
+  // Smooth, window-like resizing: any change to the chosen size (stepper-free
+  // edge drag is instant because resizeAxis is set; config edits and shell.json
+  // reloads glide). All downstream geometry derives from popupWidth/Height, so
+  // the card, grid cap and body reveal animate together.
+  Behavior on popupWidth {
+    enabled: !root.resizeAxis
+    NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+  }
+  Behavior on popupHeight {
+    enabled: !root.resizeAxis
+    NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+  }
 
   // Clamp range (space units).
   readonly property real popupMinSize: 120
@@ -1223,9 +1271,13 @@ BarWidget {
     // strip stuck on screen.
     onVisibleChanged: if (!visible) { root.tileDragCancel(); root.resizeEnd(false) }
     contentWidth: menuPopup.fittedContentWidth(root.popupWidthPx)
-    // Desired height is simply the live column layout; popupHeightPx acts as
-    // the user-chosen cap.
-    contentHeight: menuPopup.fittedContentHeight(menuColumn.implicitHeight,
+    // Desired height accounts for header visibility: when collapsed the grid
+    // tiles sit right under the card's top edge.
+    contentHeight: menuPopup.fittedContentHeight(
+      (headerRow.visible ? headerRow.height + menuColumn.spacing : 0)
+      + bodyFlick.height
+      + menuColumn.spacing
+      + footerRow.height,
       root.popupHeightPx)
 
     Rectangle {
@@ -1349,12 +1401,12 @@ BarWidget {
         height: {
           if (root.trayMenuMode)
             return Math.min(menuCol.implicitHeight, root.popupBodyMaxPx)
-          return root.trayOverflowItems.length + root.hiddenIds.length > 0
-            ? Math.min(gridCol.implicitHeight, root.popupBodyMaxPx)
-            : Style.space(72)
+          return root.gridBodyHeight()
         }
         contentWidth: width
-        contentHeight: Math.max(root.trayMenuMode ? menuCol.implicitHeight : gridCol.implicitHeight, height)
+        contentHeight: Math.max(root.trayMenuMode
+          ? menuCol.implicitHeight
+          : (root.denTileCount > 0 ? bodyContent.implicitHeight : emptyHint.implicitHeight), height)
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
@@ -1386,7 +1438,8 @@ BarWidget {
           }
 
           Text {
-            visible: root.trayOverflowItems.length === 0 && root.hiddenIds.length === 0
+            id: emptyHint
+            visible: root.denTileCount === 0
             width: gridCol.width
             text: "Nothing tucked away.\nHold a bar widget and drop it\non the chevron to hide it."
             horizontalAlignment: Text.AlignHCenter
@@ -1513,9 +1566,10 @@ BarWidget {
       fillMode: Image.PreserveAspectFit
       sourceSize.width: Math.round(width * Screen.devicePixelRatio)
       sourceSize.height: Math.round(height * Screen.devicePixelRatio)
-      // Guarded like tray icons: a manifest icon must never be a remote URL.
+      // Plugin faces need real file access (file:, paths) but reject embedded
+      // payloads (data:, qrc:, blob:) and network schemes.
       source: face.faceInfo && face.faceInfo.kind === "image"
-        ? String(root.safeIconSource(face.faceInfo.value) || "") : ""
+        ? String(root.safeFaceSource(face.faceInfo.value) || "") : ""
     }
 
     Text {
@@ -1538,6 +1592,7 @@ BarWidget {
 
       Text {
         anchors.centerIn: parent
+        textFormat: Text.PlainText
         text: face.faceInfo && face.faceInfo.kind === "letter" ? String(face.faceInfo.value || "?") : "?"
         color: root.foreground
         font.family: root.fontFamily
