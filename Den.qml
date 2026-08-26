@@ -275,19 +275,18 @@ BarWidget {
   readonly property real ejectStripHeight: Style.space(34)
   readonly property int denTileCount: trayOverflowItems.length + hiddenIds.length
 
-  // Card body height follows tile rows. Do not use gridCol.implicitHeight:
-  // Column still reports the hidden empty-state label, which left a one-row
-  // flyout looking like a tall empty box.
+  // Card body height follows tile rows. Deterministic from tile count +
+  // actual content width — never reads Flow.implicitHeight, which doesn't
+  // update synchronously when the Repeater model changes.
   function gridBodyHeight() {
     if (root.denTileCount <= 0) {
       var hint = emptyHint && emptyHint.implicitHeight ? emptyHint.implicitHeight : Style.space(56)
       return Math.max(Style.space(56), hint)
     }
-    var flowH = bodyContent ? bodyContent.implicitHeight : 0
-    if (flowH >= root.tileSize)
-      return Math.min(flowH, root.popupBodyMaxPx)
+    var w = bodyContent ? bodyContent.width : root.popupWidthPx
+    if (w <= 0) w = root.popupWidthPx
     var cell = root.tileSize + root.gridSpacing
-    var cols = Math.max(1, Math.floor((root.popupWidthPx + root.gridSpacing) / cell))
+    var cols = Math.max(1, Math.floor((w + root.gridSpacing) / cell))
     var rows = Math.ceil(root.denTileCount / cols)
     return Math.min(rows * root.tileSize + Math.max(0, rows - 1) * root.gridSpacing, root.popupBodyMaxPx)
   }
@@ -368,44 +367,42 @@ BarWidget {
 
   // --- edge resize -----------------------------------------------------------
   //
-  // Screen-space cursor tracking via hyprctl cursorpos eliminates the
-  // local-coordinate-shift feedback problem. Each edge instance declares its
-  // own growth direction (wSign/hSign) based on which side it sits on and
-  // where the bar is. During drag the size changes continuously (no snap);
-  // on release it snaps to the nearest grid position.
+  // Local mouse coordinates with PopupCard window-shift compensation.
+  // PopupCard re-centers on anchorItem whenever content size changes, which
+  // shifts the window and distorts local mouse coordinates. We predict the
+  // shift from the actual size change and cancel it on the next frame.
+  // No snap during drag — continuous resize; snap only on release.
   property string resizeAxis: "" // "", "w", "h", "wh"
-  property real resizeWSign: 1   // per-edge: +1 or -1
-  property real resizeHSign: 1   // per-edge: +1 or -1
-  property real resizeStartW: 0  // px at drag start
-  property real resizeStartH: 0  // px at drag start
-  property real resizeScreenX0: 0
-  property real resizeScreenY0: 0
+  property real resizeStartW: 0  // space units at drag start
+  property real resizeStartH: 0  // space units at drag start
 
   readonly property string barPos: root.bar ? String(root.bar.position || "top") : "top"
 
-  function resizeBegin(axis, wSign, hSign) {
+  function resizeBegin(axis) {
     if (root.resizeAxis) return
     root.resizeAxis = axis
-    root.resizeWSign = wSign || 0
-    root.resizeHSign = hSign || 0
-    root.resizeStartW = root.popupWidthPx
-    root.resizeStartH = root.popupHeightPx
+    root.resizeStartW = root.popupWidth
+    root.resizeStartH = root.popupHeight
   }
 
-  // Apply a screen-space delta (already multiplied by per-edge sign).
-  // No snap — the size changes continuously with the cursor.
+  // dxPx/dyPx are local mouse deltas already in growth direction.
+  // Returns { w, h } actual size change in px for window-shift compensation.
   function resizeMove(dxPx, dyPx) {
     var scale = Math.max(Style.spacing.scale, 0.01)
     var axis = root.resizeAxis
-    if (!axis) return
+    var gw = 0, gh = 0
+    if (!axis) return { w: 0, h: 0 }
     if (axis.indexOf("w") !== -1) {
-      root.popupWidth = Math.max(root.popupMinSize, Math.min(root.popupMaxSize,
-        Math.round(root.resizeStartW + dxPx / scale)))
+      var prevW = root.popupWidthPx
+      root.popupWidth = root.clampPopupUnits(root.resizeStartW + dxPx / scale)
+      gw = root.popupWidthPx - prevW
     }
     if (axis.indexOf("h") !== -1) {
-      root.popupHeight = Math.max(root.popupMinSize, Math.min(root.popupMaxSize,
-        Math.round(root.resizeStartH + dyPx / scale)))
+      var prevH = root.popupHeightPx
+      root.popupHeight = root.clampPopupUnits(root.resizeStartH + dyPx / scale)
+      gh = root.popupHeightPx - prevH
     }
+    return { w: gw, h: gh }
   }
 
   // On release: snap to nearest grid position, persist, let Behavior ease.
@@ -529,7 +526,8 @@ BarWidget {
       var d = dx * dx + dy * dy
       if (d < bestDist) {
         bestDist = d
-        best = { key: String(t.key), after: dx > 0 }
+        var sameRow = Math.abs(dy) < root.tileSize / 2
+        best = { key: String(t.key), after: sameRow ? dx > 0 : dy > 0 }
       }
     }
     if (!best) {
@@ -1189,14 +1187,18 @@ BarWidget {
   // Edge/corner resize affordance: an invisible strip along one side of the
   // card that lights up with a soft accent pill on hover and drags the given
   // axis live. Each instance declares wSign/hSign (+1 or -1) indicating which
-  // direction dragging grows the popup. Screen-space cursor tracking via
-  // hyprctl cursorpos avoids the local-coordinate-shift feedback problem.
+  // direction dragging grows the popup. Local mouse coordinates with
+  // window-shift compensation keep the drag smooth.
   component ResizeEdge: MouseArea {
     id: edge
     property string axis: "h"
     property real wSign: 0   // +1 = dragging right grows width, -1 = left
     property real hSign: 0   // +1 = dragging down grows height, -1 = up
     property bool horizontalPill: true
+    property real lastX: 0
+    property real lastY: 0
+    property real pendingCompX: 0
+    property real pendingCompY: 0
 
     z: 40
     enabled: root.menuOpen && !root.dragActive && !root.extDragActive
@@ -1204,37 +1206,35 @@ BarWidget {
     hoverEnabled: true
     preventStealing: true
 
-    Process {
-      id: edgeCursorProcess
-      command: ["hyprctl", "cursorpos"]
-      stdout: StdioCollector { id: edgeCursorStdout; waitForEnd: true }
-      stderr: StdioCollector {}
-      property real lastScreenX: 0
-      property real lastScreenY: 0
-      onExited: {
-        if (!edge.pressed || !root.resizeAxis) return
-        var match = /(-?\d+)\D+(-?\d+)/.exec(String(edgeCursorStdout.text || ""))
-        if (!match) return
-        var sx = Number(match[1])
-        var sy = Number(match[2])
-        var dx = (sx - edgeCursorProcess.lastScreenX) * edge.wSign
-        var dy = (sy - edgeCursorProcess.lastScreenY) * edge.hSign
-        edgeCursorProcess.lastScreenX = sx
-        edgeCursorProcess.lastScreenY = sy
-        root.resizeMove(dx, dy)
-      }
-    }
-
     onPressed: function(mouse) {
-      root.resizeBegin(edge.axis, edge.wSign, edge.hSign)
-      edgeCursorProcess.lastScreenX = 0
-      edgeCursorProcess.lastScreenY = 0
-      edgeCursorProcess.running = true
+      edge.lastX = mouse.x
+      edge.lastY = mouse.y
+      edge.pendingCompX = 0
+      edge.pendingCompY = 0
+      root.resizeBegin(edge.axis)
     }
     onPositionChanged: function(mouse) {
       if (!pressed || !root.resizeAxis) return
-      if (edgeCursorProcess.running) return
-      edgeCursorProcess.running = true
+      var rawDx = mouse.x - edge.lastX
+      var rawDy = mouse.y - edge.lastY
+      var dx = (rawDx + edge.pendingCompX) * edge.wSign
+      var dy = (rawDy + edge.pendingCompY) * edge.hSign
+      edge.pendingCompX = 0
+      edge.pendingCompY = 0
+      edge.lastX = mouse.x
+      edge.lastY = mouse.y
+      var g = root.resizeMove(dx, dy)
+      var bp = root.barPos
+      var wComp = 0, hComp = 0
+      if (bp === "top" || bp === "bottom") {
+        wComp = -g.w / 2
+        if (bp === "bottom") hComp = -g.h
+      } else {
+        if (bp === "right") wComp = -g.w
+        hComp = -g.h / 2
+      }
+      edge.pendingCompX = wComp
+      edge.pendingCompY = hComp
     }
     onReleased: root.resizeEnd(true)
     onCanceled: root.resizeEnd(false)
