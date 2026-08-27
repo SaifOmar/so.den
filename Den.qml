@@ -178,18 +178,6 @@ BarWidget {
     return s
   }
 
-  // Plugin face icons are semi-trusted: they resolve from manifests of plugins
-  // the user installed themselves and must keep loading real files from disk.
-  // Block everything that isn't needed for that (embedded qrc/data payloads,
-  // network schemes) while absolute paths and file: URLs keep working.
-  function safeFaceSource(v) {
-    if (typeof v !== "string") return v
-    var s = v || ""
-    if (!s) return ""
-    if (/^(https?|ftps?|data|qrc|blob):/i.test(s)) return ""
-    return s
-  }
-
   // Live tray items, excluding passives and omarchy-owned pseudo-items.
   readonly property var liveTrayItems: {
     var values = SystemTray.items.values
@@ -1852,7 +1840,7 @@ BarWidget {
       fillMode: Image.PreserveAspectFit
       sourceSize.width: Math.round(Math.min(width, height) * Screen.devicePixelRatio)
       sourceSize.height: Math.round(Math.min(width, height) * Screen.devicePixelRatio)
-      source: root.trayIconSource(trayIconRoot.icon)
+      source: root.safeIconSource(trayIconRoot.icon)
       visible: !trayIconRoot.symbolic
       layer.enabled: trayIconRoot.symbolic
     }
@@ -2027,7 +2015,7 @@ BarWidget {
       fillMode: Image.PreserveAspectFit
       sourceSize.width: width * Screen.devicePixelRatio
       sourceSize.height: height * Screen.devicePixelRatio
-      source: root.trayIconSource(menuRow.modelData.icon)
+      source: root.safeIconSource(menuRow.modelData.icon)
     }
 
     Text {
