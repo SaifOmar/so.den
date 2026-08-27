@@ -1659,9 +1659,9 @@ BarWidget {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
         }
-        }
       }
     }
+  }
 
 
   property string hoveredTileLabel: ""
@@ -1698,7 +1698,6 @@ BarWidget {
 
     Text {
       visible: face.faceKind === "plugin" && face.faceInfo && face.faceInfo.kind === "glyph"
-      textFormat: Text.PlainText
       anchors.centerIn: parent
       text: face.faceInfo && face.faceInfo.kind === "glyph" ? String(face.faceInfo.value || "") : ""
       color: root.foreground
