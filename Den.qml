@@ -1525,7 +1525,11 @@ BarWidget {
         height: {
           if (root.trayMenuMode)
             return Math.min(menuCol.implicitHeight, root.popupBodyMaxPx)
-          return root.popupBodyMaxPx
+          // gridBodyHeight() already caps at popupBodyMaxPx (the persisted/
+          // resized ceiling) and floors at the empty-state hint height, so
+          // this shrinks to fit a handful of tiles while still respecting
+          // a manually resized (or default) maximum.
+          return root.gridBodyHeight()
         }
         contentWidth: width
         contentHeight: Math.max(root.trayMenuMode
