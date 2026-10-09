@@ -5,6 +5,7 @@ import QtQuick.Controls
 import QtQuick.Effects
 import Quickshell.Services.SystemTray
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "DenModel.js" as DenModel
 
@@ -85,7 +86,7 @@ BarWidget {
 
   // --- shared lookups --------------------------------------------------------
 
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   // Per-widget inline settings from this layout entry in shell.json.
@@ -1290,9 +1291,9 @@ BarWidget {
     height: button.height
     anchors.margins: -Style.space(2)
     radius: Math.max(4, Style.cornerRadius)
-    color: Util.alpha(Color.accent, root.extOverZone ? 0.45 : 0.22)
+    color: Util.alpha(Commons.Color.accent, root.extOverZone ? 0.45 : 0.22)
     border.width: root.extOverZone ? 1.5 : 1
-    border.color: Color.accent
+    border.color: Commons.Color.accent
     visible: root.extOverZone || root.extDragActive
   }
 
@@ -1427,7 +1428,7 @@ BarWidget {
       width: edge.horizontalPill ? Style.space(30) : Style.space(3)
       height: edge.horizontalPill ? Style.space(3) : Style.space(30)
       radius: Math.min(width, height) / 2
-      color: Util.alpha(Color.accent, edge.pressed ? 0.70 : 0.32)
+      color: Util.alpha(Commons.Color.accent, edge.pressed ? 0.70 : 0.32)
       opacity: edge.containsMouse || edge.pressed ? 1 : 0
       Behavior on opacity {
         NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
@@ -1473,9 +1474,9 @@ BarWidget {
       anchors.right: parent.right
       height: root.ejectStripHeight
       radius: Math.max(2, Style.cornerRadius)
-      color: Util.alpha(Color.accent, root.ejectArmed ? 0.40 : 0.14)
+      color: Util.alpha(Commons.Color.accent, root.ejectArmed ? 0.40 : 0.14)
       border.width: root.ejectArmed ? 1.5 : 1
-      border.color: Color.accent
+      border.color: Commons.Color.accent
       visible: root.dragActive
 
       Text {
@@ -1745,9 +1746,9 @@ BarWidget {
           width: root.tileSize
           height: root.tileSize
           radius: Math.max(4, Style.cornerRadius)
-          color: Util.alpha(Color.accent, 0.30)
+          color: Util.alpha(Commons.Color.accent, 0.30)
           border.width: 1.5
-          border.color: Color.accent
+          border.color: Commons.Color.accent
           opacity: root.ejectArmed ? 0.75 : 0.95
 
           TileFace {
@@ -1859,7 +1860,7 @@ BarWidget {
       width: Style.space(24)
       height: Style.space(24)
       radius: width / 2
-      color: Util.alpha(Color.accent, 0.32)
+      color: Util.alpha(Commons.Color.accent, 0.32)
 
       Text {
         anchors.centerIn: parent
@@ -1892,14 +1893,14 @@ BarWidget {
     height: root.tileSize
     radius: Math.max(4, Style.cornerRadius)
     color: root.dragActive
-      ? (root.dragId === key ? Util.alpha(Color.accent, 0.30) : "transparent")
+      ? (root.dragId === key ? Util.alpha(Commons.Color.accent, 0.30) : "transparent")
       : (tileMouse.containsMouse
           ? Style.hoverFillFor(root.foreground, root.foreground)
           : "transparent")
     // The dragged tile gets a soft border; the slot it would land in gets a
     // bright accent ring.
     border.width: root.dragActive && (root.dragId === key || root.reorderTargetKey === key) ? 1.5 : 0
-    border.color: Color.accent
+    border.color: Commons.Color.accent
 
     opacity: root.dragActive && root.dragId === key ? 0.45 : 1.0
 
@@ -2156,7 +2157,7 @@ BarWidget {
       anchors.rightMargin: Style.space(10)
       anchors.verticalCenter: parent.verticalCenter
       height: 1
-      color: Color.popups.border
+      color: Commons.Color.popups.border
       opacity: 0.45
     }
 
